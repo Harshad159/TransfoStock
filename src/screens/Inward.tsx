@@ -12,7 +12,7 @@ export default function Inward() {
   // ----- Form state -----
   const [selectedItemId, setSelectedItemId] = useState<string>("");
   const [newItemName, setNewItemName] = useState("");
-  const [quantity, setQuantity] = useState<number>(0);
+  const [quantity, setQuantity] = useState<string>("");     // ← string (empty by default)
   const [unit, setUnit] = useState<Unit>("Nos");
   const [purchaser, setPurchaser] = useState("");
   const [billNo, setBillNo] = useState("");
@@ -23,8 +23,8 @@ export default function Inward() {
     const dd = String(d.getDate()).padStart(2, "0");
     return `${yyyy}-${mm}-${dd}`; // for <input type="date">
   });
-  const [price, setPrice] = useState<number>(0);
-  const [reorder, setReorder] = useState<number>(0);
+  const [price, setPrice] = useState<string>("");           // ← string (empty by default)
+  const [reorder, setReorder] = useState<string>("");       // ← string (empty by default)
   const [description, setDescription] = useState("");
 
   // existing items sorted by name
@@ -37,7 +37,7 @@ export default function Inward() {
   function resetForm() {
     setSelectedItemId("");
     setNewItemName("");
-    setQuantity(0);
+    setQuantity("");               // ← empty
     setUnit("Nos");
     setPurchaser("");
     setBillNo("");
@@ -48,15 +48,16 @@ export default function Inward() {
       const dd = String(d.getDate()).padStart(2, "0");
       return `${yyyy}-${mm}-${dd}`;
     });
-    setPrice(0);
-    setReorder(0);
+    setPrice("");                  // ← empty
+    setReorder("");                // ← empty
     setDescription("");
   }
 
   function validate(): string | null {
     if (!selectedItemId && !newItemName.trim())
       return "Select an existing item or enter a new item name.";
-    if (quantity <= 0) return "Quantity must be greater than 0.";
+    if (!quantity || parseFloat(quantity) <= 0)
+      return "Quantity must be greater than 0.";
     return null;
   }
 
@@ -66,6 +67,10 @@ export default function Inward() {
       alert(err);
       return;
     }
+
+    const parsedQty = parseFloat(quantity || "0");
+    const parsedPrice = price ? parseFloat(price) : 0;
+    const parsedReorder = reorder ? parseFloat(reorder) : 0;
 
     // Build base item (for new or update-existing)
     let baseItem: Omit<
@@ -77,23 +82,23 @@ export default function Inward() {
       // use existing item's details as base, but allow unit/price/reorder/description overrides
       const found = state.items.find((i) => i.id === selectedItemId)!;
       baseItem = {
-        id: found.id, // reducer ignores id for "new insert", but we pass other fields to update meta
+        id: found.id,
         name: found.name,
         unit: unit || found.unit,
-        purchasePrice: price || found.purchasePrice || 0,
+        purchasePrice: parsedPrice || found.purchasePrice || 0,
         description: description || found.description,
         openingStockDate: found.openingStockDate,
-        reorderLevel: Number.isFinite(reorder) && reorder > 0 ? reorder : found.reorderLevel || 0,
+        reorderLevel: parsedReorder || found.reorderLevel || 0,
       };
     } else {
       baseItem = {
         id: crypto.randomUUID(),
         name: newItemName.trim(),
         unit,
-        purchasePrice: price || 0,
+        purchasePrice: parsedPrice || 0,
         description,
         openingStockDate: billDate,
-        reorderLevel: reorder || 0,
+        reorderLevel: parsedReorder || 0,
       };
     }
 
@@ -101,7 +106,7 @@ export default function Inward() {
       id: crypto.randomUUID(),
       type: "INWARD",
       date: new Date().toISOString(),
-      quantity,
+      quantity: parsedQty,            // ← parsed from string
       purchaser,
       billNo,
       billDate,
@@ -142,11 +147,24 @@ export default function Inward() {
                     const found = state.items.find((i) => i.id === id);
                     if (found) {
                       setUnit(found.unit);
-                      setPrice(found.purchasePrice || 0);
-                      setReorder(found.reorderLevel || 0);
+                      setPrice(
+                        found.purchasePrice != null && !Number.isNaN(found.purchasePrice)
+                          ? String(found.purchasePrice)
+                          : ""
+                      );
+                      setReorder(
+                        found.reorderLevel != null && !Number.isNaN(found.reorderLevel)
+                          ? String(found.reorderLevel)
+                          : ""
+                      );
                       setDescription(found.description || "");
                     }
                     setNewItemName("");
+                  } else {
+                    // moving back to "-- Add New Item --"
+                    setPrice("");
+                    setReorder("");
+                    setDescription("");
                   }
                 }}
               >
@@ -185,9 +203,8 @@ export default function Inward() {
                 type="number"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 100"
-                value={Number.isFinite(quantity) ? quantity : 0}
-                min={0}
-                onChange={(e) => setQuantity(parseFloat(e.target.value || "0"))}
+                value={quantity}                         // ← string
+                onChange={(e) => setQuantity(e.target.value)}
               />
             </label>
 
@@ -256,8 +273,8 @@ export default function Inward() {
                 step="0.01"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 25.50"
-                value={Number.isFinite(price) ? price : 0}
-                onChange={(e) => setPrice(parseFloat(e.target.value || "0"))}
+                value={price}                            // ← string
+                onChange={(e) => setPrice(e.target.value)}
               />
             </label>
 
@@ -270,8 +287,8 @@ export default function Inward() {
                 type="number"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 20"
-                value={Number.isFinite(reorder) ? reorder : 0}
-                onChange={(e) => setReorder(parseFloat(e.target.value || "0"))}
+                value={reorder}                          // ← string
+                onChange={(e) => setReorder(e.target.value)}
               />
             </label>
 
