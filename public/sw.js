@@ -1,22 +1,24 @@
 // TransfoStock PWA — offline-first service worker
+// Place this file at: public/sw.js
 
-const CACHE_VERSION = "v1.0.0";
+// 🔁 Bump this to force updates to installed apps
+const CACHE_VERSION = "v1.0.1";
 const STATIC_CACHE = `ts-static-${CACHE_VERSION}`;
-const HTML_CACHE = `ts-html-${CACHE_VERSION}`;
+const HTML_CACHE   = `ts-html-${CACHE_VERSION}`;
 
-// IMPORTANT: GitHub Pages base path
+// GitHub Pages base path (repo name)
 const BASE = "/TransfoStock";
 
-// Core files to precache
+// Core files to precache (app shell + manifest + icons)
 const PRECACHE_URLS = [
   `${BASE}/`,
   `${BASE}/index.html`,
   `${BASE}/manifest.webmanifest`,
   `${BASE}/icons/icon-192.png`,
-  `${BASE}/icons/icon-512.png`
+  `${BASE}/icons/icon-512.png`,
 ];
 
-// ----- Install -----
+// Install: precache core
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) => cache.addAll(PRECACHE_URLS))
@@ -24,57 +26,62 @@ self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
 
-// ----- Activate -----
+// Activate: clear old caches
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => ![STATIC_CACHE, HTML_CACHE].includes(key))
-          .map((key) => caches.delete(key))
+          .filter((k) => ![STATIC_CACHE, HTML_CACHE].includes(k))
+          .map((k) => caches.delete(k))
       )
     )
   );
   self.clients.claim();
 });
 
-// Utility: detect HTML navigation
+// Utility: detect HTML navigation requests
 function isHTMLRequest(request) {
   return request.mode === "navigate" ||
     (request.headers.get("accept") || "").includes("text/html");
 }
 
-// ----- Fetch handler -----
+// Fetch strategies:
+// 1) HTML navigations → network-first, fallback to cached shell
+// 2) Static assets (JS/CSS/images/fonts) → cache-first
+// 3) Everything else → stale-while-revalidate
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  // 1) HTML pages: network-first, fallback to cache
+  // 1) HTML pages
   if (isHTMLRequest(request)) {
     event.respondWith(
       (async () => {
         try {
           const fresh = await fetch(request);
           const cache = await caches.open(HTML_CACHE);
+          // Always keep a copy of the latest app shell
           cache.put(`${BASE}/index.html`, fresh.clone());
           return fresh;
         } catch {
+          // Offline → serve cached shell
           const cached = await caches.match(`${BASE}/index.html`);
           if (cached) return cached;
-          return new Response("<h1>Offline</h1><p>Please reconnect.</p>", {
-            headers: { "Content-Type": "text/html; charset=UTF-8" }
-          });
+          return new Response(
+            "<h1>Offline</h1><p>Please reconnect and try again.</p>",
+            { headers: { "Content-Type": "text/html; charset=UTF-8" } }
+          );
         }
       })()
     );
     return;
   }
 
-  // 2) Static assets (JS/CSS/images): cache-first
+  // 2) Static assets (Vite outputs under /assets) → cache-first
   const isStaticAsset =
     sameOrigin &&
     (url.pathname.startsWith(`${BASE}/assets/`) ||
@@ -98,7 +105,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 3) Other requests: stale-while-revalidate
+  // 3) Everything else → stale-while-revalidate
   event.respondWith(
     (async () => {
       const cache = await caches.open(STATIC_CACHE);
