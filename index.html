@@ -12,25 +12,32 @@
     <!-- ✅ App icon -->
     <link rel="icon" href="/TransfoStock/icons/icon-192.png" />
 
-    <!-- Tailwind (CDN) -->
+    <!-- ✅ Tailwind (CDN build for quick prototyping) -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- ✅ Material Icons for dashboard cards -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/icon?family=Material+Icons"
+    />
   </head>
   <body class="bg-gray-100 text-gray-900">
+    <!-- React will mount here -->
     <div id="root"></div>
 
     <!-- React entry -->
     <script type="module" src="/src/main.tsx"></script>
 
-    <!-- ✅ Service worker: register + auto-reload on new version -->
+    <!-- ✅ Service worker: register + auto-reload on update -->
     <script>
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker
           .register("/TransfoStock/sw.js")
           .then((reg) => {
-            // Ask for an update check on load
+            // Check for updates on load
             reg.update?.();
 
-            // When a new SW takes control, reload to get fresh files
+            // Auto-reload when a new SW activates
             navigator.serviceWorker.addEventListener("controllerchange", () => {
               window.location.reload();
             });
