@@ -1,257 +1,278 @@
+// /src/screens/Reports.tsx
 import React, { useMemo, useState } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
-import type { StockMovement } from "../types";
+import type { InventoryItem, StockMovement } from "../types";
 
-// --------- helpers ----------
-function fmtDate(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString();
+/**
+ * We flatten each item's history into rows the report can display/filter/export.
+ * Movement types expected in this app:
+ *  - "INWARD"
+ *  - "OUTWARD_SITE"
+ *  - "OUTWARD_FACTORY"
+ *  - "RETURN"
+ */
+
+type FlatRow = {
+  id: string;
+  date: string; // ISO string
+  itemName: string;
+  unit: string;
+  type: "INWARD" | "OUTWARD_SITE" | "OUTWARD_FACTORY" | "RETURN";
+  quantity: number;
+  // freeform details string (whatever was saved in the note)
+  details: string;
+};
+
+// Parse a movement.note into separate columns To/Labor/WO/Scheme when present
+function parseSiteDetails(details: string) {
+  // examples we try to support:
+  // "To: XYZ | Labor: John | WO: 44 | Scheme: IPDS"
+  // "To XYZ (Labor Jane) WO 44 Scheme IPDS"
+  const out = { to: "", labor: "", wo: "", scheme: "" };
+
+  const norm = details.replace(/\s+/g, " ").trim();
+
+  const mTo = norm.match(/(?:^|\b)to[:\s]\s*([^|()]+?)(?=\s*(?:\(|\||$))/i);
+  if (mTo) out.to = mTo[1].trim();
+
+  const mLabor = norm.match(/labor[:\s]\s*([^|()]+?)(?=\s*(?:\(|\||$))/i);
+  if (mLabor) out.labor = mLabor[1].trim();
+
+  const mWO = norm.match(/\bwo[:\s]\s*([A-Za-z0-9\-_/]+)/i);
+  if (mWO) out.wo = mWO[1].trim();
+
+  const mScheme = norm.match(/scheme[:\s]\s*([^|()]+?)(?=\s*(?:\(|\||$))/i);
+  if (mScheme) out.scheme = mScheme[1].trim();
+
+  return out;
 }
 
-type View =
-  | "ALL"
-  | "INWARD"
-  | "OUTWARD_ALL"
-  | "OUTWARD_SITE"
-  | "OUTWARD_FACTORY"
-  | "RETURN"
-  | "LOW_STOCK";
-
-function parseSiteNote(note: string | undefined) {
-  // expected from Outward.tsx: "Site Issue | Given To: <site> | Work Order: <wo> | Labor: <labor> | Scheme: <scheme>"
-  const obj: Record<string, string> = {};
-  if (!note || !note.startsWith("Site Issue")) return obj;
-  const parts = note.split("|").map((s) => s.trim());
-  for (const p of parts.slice(1)) {
-    const [k, ...rest] = p.split(":");
-    obj[k.trim()] = rest.join(":").trim();
-  }
-  return obj; // { 'Given To': 'Site A', 'Work Order': 'WO-1', 'Labor': 'John', 'Scheme': 'IPDS' }
-}
-
-function isSiteOutward(m: StockMovement) {
-  return m.type === "OUTWARD" && (m.note || "").startsWith("Site Issue");
-}
-function isFactoryOutward(m: StockMovement) {
-  return m.type === "OUTWARD" && (m.note || "").startsWith("Factory Issue");
-}
-
-function exportCSV(rows: string[][], filename: string) {
-  const csv = rows
-    .map((r) =>
-      r
-        .map((cell) => {
-          const s = String(cell ?? "");
-          const needs = /[",\n]/.test(s);
-          return needs ? `"${s.replace(/"/g, '""')}"` : s;
-        })
-        .join(",")
-    )
-    .join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// --------- component ----------
 export default function Reports() {
   const { state } = useInventory();
 
-  const [view, setView] = useState<View>("OUTWARD_SITE"); // default like your mock
-  const [laborFilter, setLaborFilter] = useState<string>("__ALL__");
+  // Build flat rows from item histories
+  const allRows: FlatRow[] = useMemo(() => {
+    const rows: FlatRow[] = [];
+    state.items.forEach((item: InventoryItem) => {
+      (item.history || []).forEach((mv: StockMovement) => {
+        rows.push({
+          id: mv.id,
+          date: mv.date, // ISO
+          itemName: item.name,
+          unit: item.unit,
+          type: mv.type as FlatRow["type"],
+          quantity: mv.quantity || 0,
+          details: mv.note || "",
+        });
+      });
+    });
+    // sort newest first
+    rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+    return rows;
+  }, [state.items]);
 
-  const movementsSorted = useMemo(
-    () =>
-      [...state.movements].sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-      ),
-    [state.movements]
-  );
+  // Report filters
+  const FILTERS = [
+    "All Transactions",
+    "Inward",
+    "Outward (All)",
+    "Site Material Issued",
+    "Factory Material Issued",
+    "Return",
+    "Low Stock Report",
+  ] as const;
+  type FilterType = (typeof FILTERS)[number];
 
-  // Collect labor names from site outward notes (for dropdown)
-  const allLaborNames = useMemo(() => {
+  const [filter, setFilter] = useState<FilterType>("Site Material Issued");
+  const [laborFilter, setLaborFilter] = useState<string>("All Labors");
+
+  // Create a unique list of labors found in OUTWARD_SITE rows
+  const laborOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const m of movementsSorted) {
-      if (isSiteOutward(m)) {
-        const meta = parseSiteNote(m.note);
-        const lb = meta["Labor"];
-        if (lb) set.add(lb);
-      }
+    allRows
+      .filter((r) => r.type === "OUTWARD_SITE")
+      .forEach((r) => {
+        const { labor } = parseSiteDetails(r.details);
+        if (labor) set.add(labor);
+      });
+    return ["All Labors", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [allRows]);
+
+  // Apply filters
+  const viewRows = useMemo(() => {
+    let base = allRows;
+
+    switch (filter) {
+      case "Inward":
+        base = base.filter((r) => r.type === "INWARD");
+        break;
+      case "Outward (All)":
+        base = base.filter(
+          (r) => r.type === "OUTWARD_SITE" || r.type === "OUTWARD_FACTORY"
+        );
+        break;
+      case "Site Material Issued":
+        base = base.filter((r) => r.type === "OUTWARD_SITE");
+        if (laborFilter !== "All Labors") {
+          base = base.filter(
+            (r) => parseSiteDetails(r.details).labor === laborFilter
+          );
+        }
+        break;
+      case "Factory Material Issued":
+        base = base.filter((r) => r.type === "OUTWARD_FACTORY");
+        break;
+      case "Return":
+        base = base.filter((r) => r.type === "RETURN");
+        break;
+      case "Low Stock Report":
+        // handled separately below
+        break;
     }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [movementsSorted]);
 
-  // Filtered rows for the table (on-screen view)
-  const rows = useMemo(() => {
-    if (view === "LOW_STOCK") return [];
+    return base;
+  }, [allRows, filter, laborFilter]);
 
-    let list = movementsSorted.filter((m) => {
-      switch (view) {
-        case "ALL":
-          return true;
-        case "INWARD":
-          return m.type === "INWARD" || m.type === "RETURN";
-        case "RETURN":
-          return m.type === "RETURN";
-        case "OUTWARD_ALL":
-          return m.type === "OUTWARD";
-        case "OUTWARD_SITE":
-          return isSiteOutward(m);
-        case "OUTWARD_FACTORY":
-          return isFactoryOutward(m);
-        default:
-          return true;
-      }
-    });
+  // Low stock data
+  const lowStock = useMemo(() => {
+    if (filter !== "Low Stock Report") return [];
+    return state.items
+      .filter(
+        (i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? 0)
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [filter, state.items]);
 
-    if (view === "OUTWARD_SITE" && laborFilter !== "__ALL__") {
-      list = list.filter((m) => parseSiteNote(m.note)["Labor"] === laborFilter);
-    }
-
-    return list.map((m) => {
-      const typeBadge =
-        m.type === "INWARD"
-          ? "INWARD"
-          : m.type === "RETURN"
-          ? "RETURN"
-          : isSiteOutward(m)
-          ? "OUTWARD (SITE)"
-          : isFactoryOutward(m)
-          ? "OUTWARD (FACTORY)"
-          : "OUTWARD";
-
-      const meta = parseSiteNote(m.note);
-      let details = m.note || "";
-      if (isSiteOutward(m)) {
-        const line1 =
-          `To: ${meta["Given To"] || "-"}` +
-          (meta["Labor"] ? ` (Labor: ${meta["Labor"]})` : "");
-        const line2 =
-          (meta["Work Order"] ? `WO: ${meta["Work Order"]}` : "") +
-          (meta["Scheme"]
-            ? `${meta["Work Order"] ? " | " : ""}Scheme: ${meta["Scheme"]}`
-            : "");
-        details = line1 + (line2 ? `\n${line2}` : "");
-      }
-
-      return {
-        date: fmtDate(m.date),
-        itemName: (m as any).itemName || "—",
-        typeBadge,
-        qty: m.quantity,
-        details,
-        meta, // parsed fields for export
-      };
-    });
-  }, [movementsSorted, view, laborFilter]);
-
-  const showLabor = view === "OUTWARD_SITE";
-
-  function doExport() {
-    if (view === "LOW_STOCK") {
+  // CSV export
+  function exportCSV() {
+    if (filter === "Low Stock Report") {
       const rows = [
         ["Item Name", "Unit", "Current Stock", "Reorder Level"],
-        ...state.items
-          .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1))
-          .map((i) => [
-            i.name,
-            i.unit,
-            String(i.currentStock ?? 0),
-            String(i.reorderLevel ?? 0),
-          ]),
+        ...lowStock.map((i) => [
+          i.name,
+          i.unit,
+          String(i.currentStock ?? 0),
+          String(i.reorderLevel ?? 0),
+        ]),
       ];
-      exportCSV(rows, "low_stock_report.csv");
+      downloadCSV(rows, "low_stock_report.csv");
       return;
     }
 
-    if (view === "OUTWARD_SITE") {
-      const header = [
-        "Date",
-        "Item Name",
-        "Type",
-        "Quantity",
-        "To",
-        "Labor",
-        "WO",
-        "Scheme",
+    // For site issued, include separate columns
+    if (filter === "Site Material Issued") {
+      const rows = [
+        ["Date", "Item Name", "Quantity", "Unit", "To", "Labor", "WO", "Scheme"],
+        ...viewRows.map((r) => {
+          const { to, labor, wo, scheme } = parseSiteDetails(r.details);
+          return [
+            new Date(r.date).toLocaleDateString(),
+            r.itemName,
+            String(r.quantity),
+            r.unit,
+            to,
+            labor,
+            wo,
+            scheme,
+          ];
+        }),
       ];
-      const data = rows.map((r) => [
-        r.date,
+      downloadCSV(rows, "site_material_issued.csv");
+      return;
+    }
+
+    // Generic export for other filters
+    const rows = [
+      ["Date", "Item Name", "Type", "Quantity", "Unit", "Details"],
+      ...viewRows.map((r) => [
+        new Date(r.date).toLocaleDateString(),
         r.itemName,
-        r.typeBadge,
-        String(r.qty),
-        r.meta["Given To"] || "",
-        r.meta["Labor"] || "",
-        r.meta["Work Order"] || "",
-        r.meta["Scheme"] || "",
-      ]);
-      exportCSV([header, ...data], "site_material_issued.csv");
-      return;
-    }
-
-    const header = ["Date", "Item Name", "Type", "Quantity", "Details"];
-    const data = rows.map((r) => [
-      r.date,
-      r.itemName,
-      r.typeBadge,
-      String(r.qty),
-      r.details.replace(/\n/g, " | "),
-    ]);
-    exportCSV([header, ...data], "transactions_report.csv");
+        r.type,
+        String(r.quantity),
+        r.unit,
+        r.details.replace(/\n/g, " "),
+      ]),
+    ];
+    downloadCSV(rows, "transfostock_reports.csv");
   }
+
+  function downloadCSV(rows: (string | number)[][], filename: string) {
+    const csv = rows
+      .map((r) =>
+        r
+          .map((cell) => {
+            const s = String(cell ?? "");
+            const needsQuote = /[",\n]/.test(s);
+            const safe = s.replace(/"/g, '""');
+            return needsQuote ? `"${safe}"` : safe;
+          })
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const showLaborDropdown = filter === "Site Material Issued";
 
   return (
     <div className="pb-24">
       <Header title="Reports" />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* toolbar */}
-          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          {/* Top toolbar */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
             <h2 className="text-2xl font-semibold">Reports</h2>
 
-            <div className="flex items-center gap-3">
-              {/* main filter */}
+            <div className="flex flex-col md:flex-row gap-3">
+              {/* Main filter */}
               <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value as any)}
                 className="bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={view}
-                onChange={(e) => {
-                  setView(e.target.value as View);
-                  setLaborFilter("__ALL__");
-                }}
               >
-                <option value="ALL">All Transactions</option>
-                <option value="INWARD">Inward</option>
-                <option value="OUTWARD_ALL">Outward (All)</option>
-                <option value="OUTWARD_SITE">Site Material Issued</option>
-                <option value="OUTWARD_FACTORY">Factory Material Issued</option>
-                <option value="RETURN">Return</option>
-                <option value="LOW_STOCK">Low Stock Report</option>
+                {(
+                  [
+                    "All Transactions",
+                    "Inward",
+                    "Outward (All)",
+                    "Site Material Issued",
+                    "Factory Material Issued",
+                    "Return",
+                    "Low Stock Report",
+                  ] as FilterType[]
+                ).map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
               </select>
 
-              {/* labor filter (only for Site Material Issued) */}
-              {showLabor ? (
-                <select
-                  className="bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                  value={laborFilter}
-                  onChange={(e) => setLaborFilter(e.target.value)}
-                >
-                  <option value="__ALL__">All Labors</option>
-                  {allLaborNames.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
+              {/* Labor dropdown only for Site Material Issued */}
+              <select
+                value={laborFilter}
+                onChange={(e) => setLaborFilter(e.target.value)}
+                disabled={!showLaborDropdown}
+                className={`bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none ${
+                  !showLaborDropdown ? "opacity-50 cursor-not-allowed" : ""
+                }`}
+              >
+                {laborOptions.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
 
               <button
-                onClick={doExport}
+                onClick={exportCSV}
                 className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
               >
                 Export
@@ -259,70 +280,105 @@ export default function Reports() {
             </div>
           </div>
 
-          {/* header row */}
-          <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
-            <div className="col-span-2">DATE</div>
-            <div className="col-span-4">ITEM NAME</div>
-            <div className="col-span-2">TYPE</div>
-            <div className="col-span-2">QUANTITY</div>
-            <div className="col-span-2">DETAILS</div>
-          </div>
+          {/* CONTENT */}
+          {filter === "Low Stock Report" ? (
+            // ---------- LOW STOCK TABLE ----------
+            <div className="overflow-x-auto">
+              <div className="min-w-[620px]">
+                <div className="grid grid-cols-12 bg-rose-100 text-rose-900 font-semibold rounded-md px-4 py-3 text-sm">
+                  <div className="col-span-5">ITEM NAME</div>
+                  <div className="col-span-2">UNIT</div>
+                  <div className="col-span-2">CURRENT STOCK</div>
+                  <div className="col-span-3">REORDER LEVEL</div>
+                </div>
 
-          {/* content */}
-          {view === "LOW_STOCK" ? (
-            <div className="divide-y">
-              {state.items
-                .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1))
-                .sort((a, b) => a.name.localeCompare(b.name))
-                .map((i) => (
-                  <div key={i.id} className="grid grid-cols-12 px-4 py-3">
-                    <div className="col-span-2">—</div>
-                    <div className="col-span-4 font-medium">{i.name}</div>
-                    <div className="col-span-2 text-red-700 font-semibold">
-                      LOW STOCK
-                    </div>
-                    <div className="col-span-2">
-                      {i.currentStock ?? 0} / ≤ {i.reorderLevel ?? 0}
-                    </div>
-                    <div className="col-span-2 truncate">{i.unit}</div>
+                {lowStock.length === 0 ? (
+                  <div className="text-center py-10 text-green-600 font-semibold">
+                    All Good! No items are currently below their reorder level.
                   </div>
-                ))}
-              {state.items.filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1))
-                .length === 0 && (
-                <div className="px-4 py-6 text-gray-600">No low stock items.</div>
-              )}
+                ) : (
+                  <div className="divide-y">
+                    {lowStock.map((i) => (
+                      <div
+                        key={i.id}
+                        className="grid grid-cols-12 px-4 py-3 text-sm"
+                      >
+                        <div className="col-span-5 truncate font-medium">
+                          {i.name}
+                        </div>
+                        <div className="col-span-2">{i.unit}</div>
+                        <div className="col-span-2">
+                          {i.currentStock ?? 0}
+                        </div>
+                        <div className="col-span-3 text-red-600 font-semibold">
+                          {i.reorderLevel ?? 0}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <div className="divide-y">
-              {rows.map((r, idx) => (
-                <div key={idx} className="grid grid-cols-12 px-4 py-3">
-                  <div className="col-span-2">{r.date}</div>
-                  <div className="col-span-4 font-medium">{r.itemName}</div>
-                  <div className="col-span-2">
-                    <span
-                      className={
-                        "px-2 py-1 rounded-full text-xs font-semibold " +
-                        (r.typeBadge.includes("OUTWARD")
-                          ? "bg-orange-100 text-orange-700"
-                          : r.typeBadge === "INWARD"
-                          ? "bg-green-100 text-green-700"
-                          : r.typeBadge === "RETURN"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-gray-100 text-gray-700")
-                      }
-                    >
-                      {r.typeBadge}
-                    </span>
-                  </div>
-                  <div className="col-span-2 font-semibold">{r.qty}</div>
-                  <div className="col-span-2 whitespace-pre-line truncate">
-                    {r.details}
-                  </div>
+            // ---------- MOVEMENTS TABLE ----------
+            <div className="overflow-x-auto">
+              <div className="min-w-[740px]">
+                <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3 text-sm">
+                  <div className="col-span-2">DATE</div>
+                  <div className="col-span-3">ITEM NAME</div>
+                  <div className="col-span-2">TYPE</div>
+                  <div className="col-span-2">QUANTITY</div>
+                  {filter === "Site Material Issued" ? (
+                    <>
+                      <div className="col-span-3">DETAILS (To / Labor / WO / Scheme)</div>
+                    </>
+                  ) : (
+                    <div className="col-span-3">DETAILS</div>
+                  )}
                 </div>
-              ))}
-              {rows.length === 0 && (
-                <div className="px-4 py-6 text-gray-600">No entries.</div>
-              )}
+
+                {viewRows.length === 0 ? (
+                  <div className="text-center py-10 text-gray-500">
+                    No entries.
+                  </div>
+                ) : (
+                  <div className="divide-y">
+                    {viewRows.map((r) => {
+                      const d = new Date(r.date).toLocaleDateString();
+                      const site = parseSiteDetails(r.details);
+                      return (
+                        <div
+                          key={r.id}
+                          className="grid grid-cols-12 px-4 py-3 text-sm"
+                        >
+                          <div className="col-span-2">{d}</div>
+                          <div className="col-span-3 truncate font-medium">
+                            {r.itemName}
+                          </div>
+                          <div className="col-span-2">
+                            {r.type.replace("OUTWARD_", "OUTWARD ")}
+                          </div>
+                          <div className="col-span-2">
+                            {r.quantity} {r.unit}
+                          </div>
+                          <div className="col-span-3 truncate">
+                            {filter === "Site Material Issued"
+                              ? [
+                                  site.to && `To: ${site.to}`,
+                                  site.labor && `Labor: ${site.labor}`,
+                                  site.wo && `WO: ${site.wo}`,
+                                  site.scheme && `Scheme: ${site.scheme}`,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" | ") || r.details
+                              : r.details}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </Card>
