@@ -1,21 +1,17 @@
+// /src/components/Header.tsx
 import React from "react";
 
-const Header: React.FC = () => {
-  return (
-    <header className="w-full bg-blue-600 shadow-md">
-      <div className="max-w-7xl mx-auto flex justify-between items-center px-4 py-3">
-        {/* Section Title */}
-        <h1 className="text-lg md:text-xl font-bold text-white">
-          Dashboard
-        </h1>
+// Simple page header. Pass the current page title via `title`.
+interface HeaderProps {
+  title: string;
+  rightSlot?: React.ReactNode; // optional controls/actions placed on the right
+}
 
-        {/* App Name */}
-        <span className="text-base md:text-lg font-semibold tracking-wide text-white/90">
-          TransfoStock
-        </span>
-      </div>
+export default function Header({ title, rightSlot }: HeaderProps) {
+  return (
+    <header className="bg-blue-900 text-white px-4 py-3 flex items-center justify-between">
+      <h1 className="text-lg font-semibold">{title}</h1>
+      <div className="text-sm font-medium">{rightSlot ?? "TransfoStock"}</div>
     </header>
   );
-};
-
-export default Header;
+}
