@@ -1,3 +1,4 @@
+// /src/screens/Alerts.tsx
 import React, { useMemo } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
@@ -6,13 +7,11 @@ import { useInventory } from "../context/InventoryContext";
 export default function Alerts() {
   const { state } = useInventory();
 
-  // Items at or below their reorder level
-  const low = useMemo(
+  const lowItems = useMemo(
     () =>
       state.items
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1)),
+        .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? 0))
+        .sort((a, b) => a.name.localeCompare(b.name)),
     [state.items]
   );
 
@@ -21,41 +20,58 @@ export default function Alerts() {
       <Header title="Low Stock Alerts" />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* Title */}
-          <h2 className="text-2xl font-semibold mb-4 flex items-center gap-2">
-            <span className="material-icons text-orange-500">warning</span>
-            Low Stock Alerts
-          </h2>
-
-          {/* Table Header (pink) */}
-          <div className="grid grid-cols-12 bg-red-100 text-red-800 font-semibold rounded-md px-4 py-3 mb-2">
-            <div className="col-span-6">ITEM NAME</div>
-            <div className="col-span-2">UNIT</div>
-            <div className="col-span-2">CURRENT STOCK</div>
-            <div className="col-span-2">REORDER LEVEL</div>
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold">Low Stock Alerts</h2>
           </div>
 
-          {/* Rows or Empty State */}
-          {low.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <span className="material-icons text-green-500 text-5xl mb-3">check_circle</span>
-              <div className="text-green-600 text-xl font-semibold mb-1">All Good!</div>
-              <div className="text-gray-600">
-                No items are currently below their reorder level.
+          {/* Scrollable table wrapper to prevent overlap on small screens */}
+          <div className="overflow-x-auto">
+            {/* Ensure a reasonable minimum width so columns don't crush */}
+            <div className="min-w-[620px]">
+              {/* Header row */}
+              <div className="grid grid-cols-12 bg-rose-100 text-rose-900 font-semibold rounded-md px-4 py-3 text-sm">
+                <div className="col-span-5">ITEM NAME</div>
+                <div className="col-span-2">UNIT</div>
+                <div className="col-span-2">CURRENT STOCK</div>
+                <div className="col-span-3">REORDER LEVEL</div>
               </div>
-            </div>
-          ) : (
-            <div className="divide-y">
-              {low.map((i) => (
-                <div key={i.id} className="grid grid-cols-12 px-4 py-3">
-                  <div className="col-span-6 font-medium">{i.name}</div>
-                  <div className="col-span-2">{i.unit}</div>
-                  <div className="col-span-2 text-red-700 font-semibold">{i.currentStock ?? 0}</div>
-                  <div className="col-span-2">{i.reorderLevel ?? 0}</div>
+
+              {/* Rows / Empty state */}
+              {lowItems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <span className="material-icons text-5xl text-green-500 mb-3">
+                    check_circle
+                  </span>
+                  <div className="text-xl font-semibold text-green-600">
+                    All Good!
+                  </div>
+                  <div className="text-gray-500">
+                    No items are currently below their reorder level.
+                  </div>
                 </div>
-              ))}
+              ) : (
+                <div className="divide-y">
+                  {lowItems.map((i) => (
+                    <div
+                      key={i.id}
+                      className="grid grid-cols-12 px-4 py-3 text-sm"
+                    >
+                      <div className="col-span-5 truncate font-medium">
+                        {i.name}
+                      </div>
+                      <div className="col-span-2">{i.unit}</div>
+                      <div className="col-span-2">
+                        {i.currentStock ?? 0}
+                      </div>
+                      <div className="col-span-3 text-red-600 font-semibold">
+                        {i.reorderLevel ?? 0}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </Card>
       </div>
     </div>
