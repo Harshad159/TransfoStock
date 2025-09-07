@@ -20,7 +20,7 @@ type View =
   | "LOW_STOCK";
 
 function parseSiteNote(note: string | undefined) {
-  // expected from Outward.tsx: "Site Issue | Given To: <site> | Work Order: <wo> | Labor: <labor> | Scheme: <scheme>"
+  // expected: "Site Issue | Given To: <site> | Work Order: <wo> | Labor: <labor> | Scheme: <scheme>"
   const obj: Record<string, string> = {};
   if (!note || !note.startsWith("Site Issue")) return obj;
   const parts = note.split("|").map((s) => s.trim());
@@ -28,7 +28,7 @@ function parseSiteNote(note: string | undefined) {
     const [k, ...rest] = p.split(":");
     obj[k.trim()] = rest.join(":").trim();
   }
-  return obj; // { 'Given To': 'Site A', 'Work Order': 'WO-1', 'Labor': 'John', 'Scheme': 'IPDS' }
+  return obj;
 }
 
 function isSiteOutward(m: StockMovement) {
@@ -87,9 +87,9 @@ export default function Reports() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [movementsSorted]);
 
-  // Filtered rows for the table
+  // Filtered rows for the table (for on-screen display)
   const rows = useMemo(() => {
-    if (view === "LOW_STOCK") return []; // handled separately
+    if (view === "LOW_STOCK") return [];
 
     let list = movementsSorted.filter((m) => {
       switch (view) {
@@ -114,7 +114,6 @@ export default function Reports() {
       list = list.filter((m) => parseSiteNote(m.note)["Labor"] === laborFilter);
     }
 
-    // Build display rows with derived fields
     return list.map((m) => {
       const typeBadge =
         m.type === "INWARD"
@@ -128,9 +127,6 @@ export default function Reports() {
           : "OUTWARD";
 
       const meta = parseSiteNote(m.note);
-      const detailsSite =
-        meta["Given To"] || meta["Labor"] || meta["Work Order"] || meta["Scheme"];
-
       let details = m.note || "";
       if (isSiteOutward(m)) {
         const line1 = `To: ${meta["Given To"] || "-"}` + (meta["Labor"] ? ` (Labor: ${meta["Labor"]})` : "");
@@ -146,6 +142,7 @@ export default function Reports() {
         typeBadge,
         qty: m.quantity,
         details,
+        meta, // keep parsed bits for export
       };
     });
   }, [movementsSorted, view, laborFilter]);
@@ -153,6 +150,7 @@ export default function Reports() {
   const showLabor = view === "OUTWARD_SITE";
 
   function doExport() {
+    // 1) Low stock report -> dedicated columns
     if (view === "LOW_STOCK") {
       const rows = [
         ["Item Name", "Unit", "Current Stock", "Reorder Level"],
@@ -164,6 +162,24 @@ export default function Reports() {
       return;
     }
 
+    // 2) Site Material Issued -> split Details into separate columns
+    if (view === "OUTWARD_SITE") {
+      const header = ["Date", "Item Name", "Type", "Quantity", "To", "Labor", "WO", "Scheme"];
+      const data = rows.map((r) => [
+        r.date,
+        r.itemName,
+        r.typeBadge,
+        String(r.qty),
+        r.meta["Given To"] || "",
+        r.meta["Labor"] || "",
+        r.meta["Work Order"] || "",
+        r.meta["Scheme"] || "",
+      ]);
+      exportCSV([header, ...data], "site_material_issued.csv");
+      return;
+    }
+
+    // 3) All other views -> single Details column
     const header = ["Date", "Item Name", "Type", "Quantity", "Details"];
     const data = rows.map((r) => [r.date, r.itemName, r.typeBadge, String(r.qty), r.details.replace(/\n/g, " | ")]);
     exportCSV([header, ...data], "transactions_report.csv");
