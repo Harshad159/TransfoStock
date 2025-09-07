@@ -4,7 +4,7 @@ import { InventoryProvider } from "./context/InventoryContext";
 import Dashboard from "./screens/Dashboard";
 import Inward from "./screens/Inward";
 import Outward from "./screens/Outward";
-import Overview from "./screens/Overview";   // shown as “Stock”
+import Overview from "./screens/Overview";   // used as Stock
 import Reports from "./screens/Reports";
 import Return from "./screens/Return";
 import Alerts from "./screens/Alerts";
