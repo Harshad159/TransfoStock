@@ -2,48 +2,112 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <title>TransfoStock</title>
+    <meta name="theme-color" content="#1f3995" />
 
-    <!-- ✅ PWA manifest & theme -->
-    <link rel="manifest" href="/TransfoStock/manifest.webmanifest" />
-    <meta name="theme-color" content="#1E3A8A" />
+    <!-- Inter (variable) for crisp, professional mobile UI text -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
 
-    <!-- ✅ App icon -->
-    <link rel="icon" href="/TransfoStock/icons/icon-192.png" />
+    <!-- Material Symbols Rounded (smoother than baseline) -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
 
-    <!-- ✅ Tailwind (CDN build for quick prototyping) -->
+    <!-- Tailwind (your project already uses it; keep this line) -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- ✅ Material Icons for dashboard cards -->
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/icon?family=Material+Icons"
-    />
+    <style>
+      :root {
+        /* Brand */
+        --brand-900: #1b2f7a; /* deep brand blue (kept from your PWA) */
+        --brand-800: #1f3995;
+        --brand-700: #2444b0;
+        --brand-600: #2b54d6;
+
+        /* Accents */
+        --accent-green: #22c55e;
+        --accent-orange: #f97316;
+
+        /* Surfaces */
+        --surface: #f6f7fb;
+        --card: #ffffff;
+
+        /* Shadows */
+        --elev-1: 0 2px 6px rgba(15, 23, 42, 0.08);
+        --elev-2: 0 6px 20px rgba(15, 23, 42, 0.12);
+      }
+
+      html,
+      body {
+        height: 100%;
+        background: var(--surface);
+      }
+
+      body {
+        font-family: "Inter", ui-sans-serif, system-ui, -apple-system,
+          Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+        color: #0f172a;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        letter-spacing: 0.01em;
+      }
+
+      /* Material icon class alias */
+      .material-icons,
+      .material-symbols-rounded {
+        font-family: "Material Symbols Rounded";
+        font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
+        font-style: normal;
+        line-height: 1;
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      /* Utility tokens used by components */
+      .appbar {
+        background: linear-gradient(
+          180deg,
+          var(--brand-900) 0%,
+          var(--brand-800) 70%
+        );
+        color: white;
+        box-shadow: var(--elev-1);
+      }
+
+      .card {
+        background: var(--card);
+        box-shadow: var(--elev-1);
+        border-radius: 16px;
+      }
+
+      /* Safe area on iOS */
+      .safe-top {
+        padding-top: max(env(safe-area-inset-top), 0px);
+      }
+
+      /* Improve focus outlines for accessibility */
+      :focus-visible {
+        outline: 2px solid #2563eb;
+        outline-offset: 2px;
+      }
+    </style>
   </head>
-  <body class="bg-gray-100 text-gray-900">
-    <!-- React will mount here -->
+
+  <body>
     <div id="root"></div>
 
-    <!-- React entry -->
+    <!-- App entry (Vite) -->
     <script type="module" src="/src/main.tsx"></script>
-
-    <!-- ✅ Service worker: register + auto-reload on update -->
-    <script>
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker
-          .register("/TransfoStock/sw.js")
-          .then((reg) => {
-            // Check for updates on load
-            reg.update?.();
-
-            // Auto-reload when a new SW activates
-            navigator.serviceWorker.addEventListener("controllerchange", () => {
-              window.location.reload();
-            });
-          })
-          .catch(console.error);
-      }
-    </script>
   </body>
 </html>
