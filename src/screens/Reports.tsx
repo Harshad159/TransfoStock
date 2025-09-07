@@ -20,7 +20,7 @@ type View =
   | "LOW_STOCK";
 
 function parseSiteNote(note: string | undefined) {
-  // expected: "Site Issue | Given To: <site> | Work Order: <wo> | Labor: <labor> | Scheme: <scheme>"
+  // expected from Outward.tsx: "Site Issue | Given To: <site> | Work Order: <wo> | Labor: <labor> | Scheme: <scheme>"
   const obj: Record<string, string> = {};
   if (!note || !note.startsWith("Site Issue")) return obj;
   const parts = note.split("|").map((s) => s.trim());
@@ -28,7 +28,7 @@ function parseSiteNote(note: string | undefined) {
     const [k, ...rest] = p.split(":");
     obj[k.trim()] = rest.join(":").trim();
   }
-  return obj;
+  return obj; // { 'Given To': 'Site A', 'Work Order': 'WO-1', 'Labor': 'John', 'Scheme': 'IPDS' }
 }
 
 function isSiteOutward(m: StockMovement) {
@@ -63,7 +63,7 @@ function exportCSV(rows: string[][], filename: string) {
 export default function Reports() {
   const { state } = useInventory();
 
-  const [view, setView] = useState<View>("OUTWARD_SITE"); // default as your screenshot
+  const [view, setView] = useState<View>("OUTWARD_SITE"); // default like your mock
   const [laborFilter, setLaborFilter] = useState<string>("__ALL__");
 
   const movementsSorted = useMemo(
@@ -74,7 +74,7 @@ export default function Reports() {
     [state.movements]
   );
 
-  // Collect all labor names from site outward notes (for dropdown)
+  // Collect labor names from site outward notes (for dropdown)
   const allLaborNames = useMemo(() => {
     const set = new Set<string>();
     for (const m of movementsSorted) {
@@ -87,7 +87,7 @@ export default function Reports() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [movementsSorted]);
 
-  // Filtered rows for the table (for on-screen display)
+  // Filtered rows for the table (on-screen view)
   const rows = useMemo(() => {
     if (view === "LOW_STOCK") return [];
 
@@ -129,10 +129,14 @@ export default function Reports() {
       const meta = parseSiteNote(m.note);
       let details = m.note || "";
       if (isSiteOutward(m)) {
-        const line1 = `To: ${meta["Given To"] || "-"}` + (meta["Labor"] ? ` (Labor: ${meta["Labor"]})` : "");
+        const line1 =
+          `To: ${meta["Given To"] || "-"}` +
+          (meta["Labor"] ? ` (Labor: ${meta["Labor"]})` : "");
         const line2 =
           (meta["Work Order"] ? `WO: ${meta["Work Order"]}` : "") +
-          (meta["Scheme"] ? `${meta["Work Order"] ? " | " : ""}Scheme: ${meta["Scheme"]}` : "");
+          (meta["Scheme"]
+            ? `${meta["Work Order"] ? " | " : ""}Scheme: ${meta["Scheme"]}`
+            : "");
         details = line1 + (line2 ? `\n${line2}` : "");
       }
 
@@ -142,7 +146,7 @@ export default function Reports() {
         typeBadge,
         qty: m.quantity,
         details,
-        meta, // keep parsed bits for export
+        meta, // parsed fields for export
       };
     });
   }, [movementsSorted, view, laborFilter]);
@@ -150,21 +154,33 @@ export default function Reports() {
   const showLabor = view === "OUTWARD_SITE";
 
   function doExport() {
-    // 1) Low stock report -> dedicated columns
     if (view === "LOW_STOCK") {
       const rows = [
         ["Item Name", "Unit", "Current Stock", "Reorder Level"],
         ...state.items
           .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1))
-          .map((i) => [i.name, i.unit, String(i.currentStock ?? 0), String(i.reorderLevel ?? 0)]),
+          .map((i) => [
+            i.name,
+            i.unit,
+            String(i.currentStock ?? 0),
+            String(i.reorderLevel ?? 0),
+          ]),
       ];
       exportCSV(rows, "low_stock_report.csv");
       return;
     }
 
-    // 2) Site Material Issued -> split Details into separate columns
     if (view === "OUTWARD_SITE") {
-      const header = ["Date", "Item Name", "Type", "Quantity", "To", "Labor", "WO", "Scheme"];
+      const header = [
+        "Date",
+        "Item Name",
+        "Type",
+        "Quantity",
+        "To",
+        "Labor",
+        "WO",
+        "Scheme",
+      ];
       const data = rows.map((r) => [
         r.date,
         r.itemName,
@@ -179,9 +195,14 @@ export default function Reports() {
       return;
     }
 
-    // 3) All other views -> single Details column
     const header = ["Date", "Item Name", "Type", "Quantity", "Details"];
-    const data = rows.map((r) => [r.date, r.itemName, r.typeBadge, String(r.qty), r.details.replace(/\n/g, " | ")]);
+    const data = rows.map((r) => [
+      r.date,
+      r.itemName,
+      r.typeBadge,
+      String(r.qty),
+      r.details.replace(/\n/g, " | "),
+    ]);
     exportCSV([header, ...data], "transactions_report.csv");
   }
 
@@ -257,14 +278,17 @@ export default function Reports() {
                   <div key={i.id} className="grid grid-cols-12 px-4 py-3">
                     <div className="col-span-2">—</div>
                     <div className="col-span-4 font-medium">{i.name}</div>
-                    <div className="col-span-2 text-red-700 font-semibold">LOW STOCK</div>
+                    <div className="col-span-2 text-red-700 font-semibold">
+                      LOW STOCK
+                    </div>
                     <div className="col-span-2">
                       {i.currentStock ?? 0} / ≤ {i.reorderLevel ?? 0}
                     </div>
                     <div className="col-span-2 truncate">{i.unit}</div>
                   </div>
                 ))}
-              {state.items.filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1)).length === 0 && (
+              {state.items.filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? -1))
+                .length === 0 && (
                 <div className="px-4 py-6 text-gray-600">No low stock items.</div>
               )}
             </div>
@@ -291,10 +315,14 @@ export default function Reports() {
                     </span>
                   </div>
                   <div className="col-span-2 font-semibold">{r.qty}</div>
-                  <div className="col-span-2 whitespace-pre-line truncate">{r.details}</div>
+                  <div className="col-span-2 whitespace-pre-line truncate">
+                    {r.details}
+                  </div>
                 </div>
               ))}
-              {rows.length === 0 && <div className="px-4 py-6 text-gray-600">No entries.</div>}
+              {rows.length === 0 && (
+                <div className="px-4 py-6 text-gray-600">No entries.</div>
+              )}
             </div>
           )}
         </Card>
