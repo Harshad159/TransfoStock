@@ -1,352 +1,531 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 
-// ---------- helpers ----------
-const fmt = (iso?: string) => {
-  if (!iso) return "";
+type ReportKind =
+  | "all"
+  | "inward"
+  | "outwardAll"
+  | "siteIssued"
+  | "factoryIssued"
+  | "return";
+
+const PER_PAGE = 15;
+
+function fmtDate(iso?: string) {
+  if (!iso) return "—";
   try {
     const d = new Date(iso);
-    return d.toLocaleDateString(undefined, { year: "numeric", month: "numeric", day: "numeric" });
+    return d.toLocaleDateString();
   } catch {
-    return iso;
+    return "—";
   }
-};
+}
 
-// Treat anything with "OUTWARD" in type (or exactly "OUTWARD") as outward
-const isOutward = (m: any) =>
-  typeof m?.type === "string" &&
-  (m.type.toUpperCase().includes("OUTWARD") || m.type.toUpperCase() === "OUTWARD");
-
-// Infer SITE vs FACTORY by metadata when type alone is not reliable
-const isOutwardSite = (m: any) =>
-  isOutward(m) &&
-  !!(m?.meta?.toSite || m?.meta?.laborName || m?.meta?.workOrder || m?.meta?.scheme);
-
-const isOutwardFactory = (m: any) =>
-  isOutward(m) && !!(m?.meta?.toDept || m?.meta?.issueEmployee || m?.meta?.department);
-
-type View =
-  | "ALL"
-  | "INWARD"
-  | "OUTWARD_ALL"
-  | "OUTWARD_SITE"
-  | "OUTWARD_FACTORY"
-  | "RETURN";
-
-const PAGE_SIZE = 15;
-
-// ---------- component ----------
 export default function Reports() {
   const { state } = useInventory();
 
-  const [view, setView] = useState<View>("ALL");
+  const [report, setReport] = useState<ReportKind>("outwardAll");
   const [laborFilter, setLaborFilter] = useState<string>("__ALL__");
-  const [page, setPage] = useState<number>(1);
+  const [page, setPage] = useState(1);
 
-  // Reset page when filters/view change
-  useEffect(() => setPage(1), [view, laborFilter]);
-
-  // itemId -> item lookup
+  // find item meta by id for name/unit
   const itemById = useMemo(() => {
-    const m = new Map<string, any>();
-    for (const it of state.items as any[]) m.set(it.id, it);
-    return m;
+    const map = new Map<string, { name: string; unit: string }>();
+    state.items.forEach((i) =>
+      map.set(i.id, { name: i.name, unit: i.unit || "Nos" })
+    );
+    return map;
   }, [state.items]);
 
-  // All movements normalized
+  // helpers to classify outward kinds
+  const isOutwardSite = (m: any) =>
+    m?.type === "OUTWARD" &&
+    !!(
+      m?.meta?.toSite ||
+      m?.meta?.laborName ||
+      m?.meta?.workOrder ||
+      m?.meta?.scheme
+    );
+
+  const isOutwardFactory = (m: any) =>
+    m?.type === "OUTWARD" &&
+    !!(m?.meta?.toDept || m?.meta?.department || m?.meta?.issueEmployee);
+
+  // base filtered rows for chosen report
   const baseRows = useMemo(() => {
-    const data = (state.movements as any[]).slice();
-
-    // filter by view
-    let filtered = data;
-    switch (view) {
-      case "INWARD":
-        filtered = data.filter((m) => String(m?.type).toUpperCase() === "INWARD");
-        break;
-      case "RETURN":
-        filtered = data.filter((m) => String(m?.type).toUpperCase() === "RETURN");
-        break;
-      case "OUTWARD_ALL":
-        filtered = data.filter((m) => isOutward(m));
-        break;
-      case "OUTWARD_SITE":
-        filtered = data.filter((m) => isOutwardSite(m));
-        break;
-      case "OUTWARD_FACTORY":
-        filtered = data.filter((m) => isOutwardFactory(m));
-        break;
-      default:
-        filtered = data; // ALL
-    }
-
-    // labor filter for site views
-    if ((view === "OUTWARD_SITE" || view === "OUTWARD_ALL") && laborFilter !== "__ALL__") {
-      filtered = filtered.filter((m) => !isOutwardSite(m) || m?.meta?.laborName === laborFilter);
-    }
-
-    // normalize to renderable rows
-    const rows = filtered.map((m) => {
-      const item = m.itemId ? itemById.get(m.itemId) : undefined;
-      return {
-        id: m.id,
-        date: m.date,
-        itemName: item?.name ?? "",
-        unit: (m.unit ?? item?.unit) || "",
-        qty: m.quantity ?? 0,
-        type: String(m?.type || ""),
-        meta: m.meta || {},
-        note: m.note || "",
-      };
+    let rows = state.movements.slice().sort((a, b) => {
+      // newest first
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
 
-    // latest first
-    rows.sort((a, b) => (a.date > b.date ? -1 : 1));
-    return rows;
-  }, [state.movements, itemById, view, laborFilter]);
-
-  // Labors list (only for Site Material Issued)
-  const allLabors = useMemo(() => {
-    const set = new Set<string>();
-    for (const m of state.movements as any[]) {
-      if (isOutwardSite(m) && m?.meta?.laborName) set.add(m.meta.laborName);
+    switch (report) {
+      case "inward":
+        rows = rows.filter((m) => m.type === "INWARD");
+        break;
+      case "outwardAll":
+        rows = rows.filter((m) => m.type === "OUTWARD");
+        break;
+      case "siteIssued":
+        rows = rows.filter(isOutwardSite);
+        break;
+      case "factoryIssued":
+        rows = rows.filter(isOutwardFactory);
+        break;
+      case "return":
+        rows = rows.filter((m) => m.type === "RETURN");
+        break;
+      case "all":
+      default:
+        // keep as is
+        break;
     }
-    return ["__ALL__", ...Array.from(set)];
-  }, [state.movements]);
 
-  // Pagination
-  const totalPages = Math.max(1, Math.ceil(baseRows.length / PAGE_SIZE));
-  const pagedRows = baseRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    // augment with item name / unit
+    return rows.map((m) => {
+      const itemMeta = itemById.get(m.itemId || "");
+      return {
+        ...m,
+        _itemName: m.meta?.itemName || itemMeta?.name || "—",
+        _unit: m.meta?.unit || itemMeta?.unit || "—",
+      };
+    });
+  }, [state.movements, report, itemById]);
 
-  // CSV export (exports ALL filtered rows, not just current page)
+  // labor list only for siteIssued
+  const laborOptions = useMemo(() => {
+    if (report !== "siteIssued") return [];
+    const set = new Set<string>();
+    baseRows.forEach((m) => {
+      const name = m.meta?.laborName?.trim();
+      if (name) set.add(name);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [baseRows, report]);
+
+  // apply labor filter (site only)
+  const filteredRows = useMemo(() => {
+    if (report !== "siteIssued") return baseRows;
+    if (laborFilter === "__ALL__") return baseRows;
+    return baseRows.filter((m) => (m.meta?.laborName || "") === laborFilter);
+  }, [baseRows, report, laborFilter]);
+
+  // pagination
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = filteredRows.slice(
+    (currentPage - 1) * PER_PAGE,
+    currentPage * PER_PAGE
+  );
+
+  // Title
+  const title = useMemo(() => {
+    switch (report) {
+      case "all":
+        return "Reports";
+      case "inward":
+        return "Inward Report";
+      case "outwardAll":
+        return "Outward (All) Report";
+      case "siteIssued":
+        return "Site Material Issued";
+      case "factoryIssued":
+        return "Factory Material Issued";
+      case "return":
+        return "Return Report";
+      default:
+        return "Reports";
+    }
+  }, [report]);
+
+  function onChangeReport(val: string) {
+    // reset page & labor filter when view changes
+    setPage(1);
+    setLaborFilter("__ALL__");
+    setReport(val as ReportKind);
+  }
+
   function exportCSV() {
-    let header: string[] = [];
-    let matrix: string[][] = [];
+    // export ALL (unpaginated) of current filter
+    const rows = filteredRows;
 
-    if (view === "INWARD") {
-      header = [
+    let headers: string[] = [];
+    let mapRow: (r: any) => (string | number)[] = () => [];
+
+    if (report === "siteIssued") {
+      headers = ["Date", "Item", "Unit", "Qty", "To Site", "Labor", "WO", "Scheme"];
+      mapRow = (r) => [
+        fmtDate(r.date),
+        r._itemName,
+        r._unit,
+        r.quantity ?? 0,
+        r.meta?.toSite || "—",
+        r.meta?.laborName || "—",
+        r.meta?.workOrder || "—",
+        r.meta?.scheme || "—",
+      ];
+    } else if (report === "factoryIssued") {
+      headers = ["Date", "Item", "Unit", "Qty", "Department", "Issue To Employee"];
+      mapRow = (r) => [
+        fmtDate(r.date),
+        r._itemName,
+        r._unit,
+        r.quantity ?? 0,
+        r.meta?.toDept || r.meta?.department || "—",
+        r.meta?.issueEmployee || "—",
+      ];
+    } else if (report === "outwardAll") {
+      headers = [
+        "Date",
+        "Item",
+        "Unit",
+        "Type",
+        "Qty",
+        "To / Dept",
+        "Labor / WO / Scheme",
+      ];
+      mapRow = (r) => [
+        fmtDate(r.date),
+        r._itemName,
+        r._unit,
+        r.type,
+        r.quantity ?? 0,
+        r.meta?.toSite || r.meta?.toDept || r.meta?.department || "—",
+        [
+          r.meta?.laborName ? `Labor: ${r.meta?.laborName}` : "",
+          r.meta?.workOrder ? `WO: ${r.meta?.workOrder}` : "",
+          r.meta?.scheme ? `Scheme: ${r.meta?.scheme}` : "",
+        ]
+          .filter(Boolean)
+          .join(" | ") || "—",
+      ];
+    } else if (report === "inward") {
+      headers = [
         "Inward Date",
-        "Item Name",
+        "Item",
         "Unit",
         "Qty",
-        "Price per Unit",
         "Purchaser",
         "Bill No.",
         "Bill Date",
+        "Price per Unit",
       ];
-      matrix = baseRows.map((r) => [
-        fmt(r.date),
-        r.itemName,
-        r.unit,
-        String(r.qty),
-        String(r.meta?.pricePerUnit ?? ""),
-        String(r.meta?.purchaser ?? ""),
-        String(r.meta?.billNo ?? ""),
-        String(r.meta?.billDate ?? ""),
-      ]);
-    } else if (view === "OUTWARD_SITE") {
-      header = ["Date", "Item Name", "Unit", "Qty", "To / Site", "Labor", "WO", "Scheme"];
-      matrix = baseRows.map((r) => [
-        fmt(r.date),
-        r.itemName,
-        r.unit,
-        String(r.qty),
-        String(r.meta?.toSite ?? ""),
-        String(r.meta?.laborName ?? ""),
-        String(r.meta?.workOrder ?? ""),
-        String(r.meta?.scheme ?? ""),
-      ]);
-    } else if (view === "OUTWARD_FACTORY") {
-      header = ["Date", "Item Name", "Unit", "Qty", "Dept", "Issue To Employee"];
-      matrix = baseRows.map((r) => [
-        fmt(r.date),
-        r.itemName,
-        r.unit,
-        String(r.qty),
-        String(r.meta?.toDept ?? r.meta?.department ?? ""),
-        String(r.meta?.issueEmployee ?? ""),
-      ]);
-    } else if (view === "RETURN") {
-      header = ["Date", "Item Name", "Unit", "Qty", "Returned From / Note"];
-      matrix = baseRows.map((r) => [fmt(r.date), r.itemName, r.unit, String(r.qty), String(r.note)]);
-    } else if (view === "OUTWARD_ALL") {
-      header = ["Date", "Item Name", "Unit", "Qty", "Type", "To / Dept / Site", "Labor / WO / Scheme"];
-      matrix = baseRows.map((r) => [
-        fmt(r.date),
-        r.itemName,
-        r.unit,
-        String(r.qty),
-        r.type,
-        isOutwardFactory(r)
-          ? String(r.meta?.toDept ?? r.meta?.department ?? "")
-          : String(r.meta?.toSite ?? ""),
-        isOutwardSite(r)
-          ? `${r.meta?.laborName ?? ""} | ${r.meta?.workOrder ?? ""} | ${r.meta?.scheme ?? ""}`
-          : String(r.meta?.issueEmployee ?? ""),
-      ]);
+      mapRow = (r) => [
+        fmtDate(r.date), // movement date = inward date
+        r._itemName,
+        r._unit,
+        r.quantity ?? 0,
+        r.meta?.purchaser || "—",
+        r.meta?.billNo || "—",
+        fmtDate(r.meta?.billDate),
+        r.meta?.pricePerUnit ?? "—",
+      ];
+    } else if (report === "return") {
+      headers = ["Date", "Item", "Unit", "Qty", "Returned From", "Note"];
+      mapRow = (r) => [
+        fmtDate(r.date),
+        r._itemName,
+        r._unit,
+        r.quantity ?? 0,
+        r.meta?.returnedFrom || "—",
+        r.note || "—",
+      ];
     } else {
-      // ALL
-      header = ["Date", "Item Name", "Unit", "Qty", "Type / Note"];
-      matrix = baseRows.map((r) => [fmt(r.date), r.itemName, r.unit, String(r.qty), r.type]);
+      // "all"
+      headers = ["Date", "Item", "Unit", "Type", "Qty", "Note"];
+      mapRow = (r) => [
+        fmtDate(r.date),
+        r._itemName,
+        r._unit,
+        r.type,
+        r.quantity ?? 0,
+        r.note || "—",
+      ];
     }
 
-    const csv =
-      [header, ...matrix]
-        .map((row) =>
-          row
-            .map((cell) => {
-              const s = String(cell ?? "");
-              return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-            })
-            .join(",")
-        )
-        .join("\n") + "\n";
+    const matrix = [headers, ...rows.map(mapRow)];
+    const csv = matrix
+      .map((row) =>
+        row
+          .map((cell) => {
+            const s = String(cell ?? "");
+            const needQ = /[",\n]/.test(s);
+            return needQ ? `"${s.replace(/"/g, '""')}"` : s;
+          })
+          .join(",")
+      )
+      .join("\n");
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filenameBase =
+      report === "siteIssued"
+        ? "site_material_issued"
+        : report === "factoryIssued"
+        ? "factory_material_issued"
+        : report === "outwardAll"
+        ? "outward_all"
+        : report === "inward"
+        ? "inward"
+        : report === "return"
+        ? "return"
+        : "all_transactions";
     a.href = url;
-    a.download = "reports_export.csv";
+    a.download = `${filenameBase}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
   return (
     <div className="pb-24">
-      <Header title="Reports" />
+      <Header title={title} />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-3 mb-4">
-            <select
-              className="bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-              value={view}
-              onChange={(e) => setView(e.target.value as View)}
-            >
-              <option value="ALL">All Transactions</option>
-              <option value="INWARD">Inward</option>
-              <option value="OUTWARD_ALL">Outward (All)</option>
-              <option value="OUTWARD_SITE">Site Material Issued</option>
-              <option value="OUTWARD_FACTORY">Factory Material Issued</option>
-              <option value="RETURN">Return</option>
-            </select>
-
-            {/* Labor dropdown only for Site Material Issued */}
-            {view === "OUTWARD_SITE" && (
+          {/* Top toolbar */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+            <div className="flex items-center gap-3">
               <select
                 className="bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={laborFilter}
-                onChange={(e) => setLaborFilter(e.target.value)}
+                value={report}
+                onChange={(e) => onChangeReport(e.target.value)}
               >
-                {allLabors.map((lb) => (
-                  <option key={lb} value={lb}>
-                    {lb === "__ALL__" ? "All Labors" : lb}
-                  </option>
-                ))}
+                <option value="all">All Transactions</option>
+                <option value="inward">Inward</option>
+                <option value="outwardAll">Outward (All)</option>
+                <option value="siteIssued">Site Material Issued</option>
+                <option value="factoryIssued">Factory Material Issued</option>
+                <option value="return">Return</option>
               </select>
-            )}
+
+              {report === "siteIssued" && (
+                <select
+                  className="bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={laborFilter}
+                  onChange={(e) => {
+                    setPage(1);
+                    setLaborFilter(e.target.value);
+                  }}
+                >
+                  <option value="__ALL__">All Labors</option>
+                  {laborOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
 
             <button
               onClick={exportCSV}
-              className="ml-auto px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium"
+              className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium self-start md:self-auto"
             >
               Export
             </button>
           </div>
 
-          {/* Table header */}
-          <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
-            <div className="col-span-2">DATE</div>
-            <div className="col-span-4">ITEM NAME</div>
-            <div className="col-span-1">UNIT</div>
-            <div className="col-span-1">QTY</div>
-            <div className="col-span-4">
-              {view === "INWARD"
-                ? "PRICE / PURCHASER / BILL"
-                : view === "OUTWARD_SITE"
-                ? "TO / LABOR / WO / SCHEME"
-                : view === "OUTWARD_FACTORY"
-                ? "DEPT / EMPLOYEE"
-                : view === "RETURN"
-                ? "NOTE"
-                : "TYPE / NOTE"}
+          {/* Table header depends on report */}
+          {report === "siteIssued" ? (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">DATE</div>
+              <div className="col-span-4">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">QTY</div>
+              <div className="col-span-2">TO / SITE</div>
+              <div className="col-span-2">LABOR / WO / SCHEME</div>
             </div>
-          </div>
+          ) : report === "factoryIssued" ? (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">DATE</div>
+              <div className="col-span-5">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">QTY</div>
+              <div className="col-span-3">DEPARTMENT / ISSUE TO</div>
+            </div>
+          ) : report === "outwardAll" ? (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">DATE</div>
+              <div className="col-span-4">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">TYPE</div>
+              <div className="col-span-1">QTY</div>
+              <div className="col-span-3">TO / DEPT &amp; LABOR / WO / SCHEME</div>
+            </div>
+          ) : report === "inward" ? (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">INWARD DATE</div>
+              <div className="col-span-3">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">QTY</div>
+              <div className="col-span-2">PURCHASER</div>
+              <div className="col-span-1">BILL NO.</div>
+              <div className="col-span-2">BILL DATE</div>
+            </div>
+          ) : report === "return" ? (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">DATE</div>
+              <div className="col-span-5">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">QTY</div>
+              <div className="col-span-3">RETURNED FROM / NOTE</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+              <div className="col-span-2">DATE</div>
+              <div className="col-span-5">ITEM NAME</div>
+              <div className="col-span-1">UNIT</div>
+              <div className="col-span-1">TYPE</div>
+              <div className="col-span-3">QTY / NOTE</div>
+            </div>
+          )}
 
           {/* Rows */}
-          {pagedRows.length === 0 ? (
-            <div className="text-gray-600 text-center py-16">No entries.</div>
+          {pageRows.length === 0 ? (
+            <div className="px-4 py-10 text-gray-500">No entries.</div>
           ) : (
             <div className="divide-y">
-              {pagedRows.map((r) => (
-                <div key={r.id} className="grid grid-cols-12 px-4 py-3 items-center">
-                  <div className="col-span-2 truncate">{fmt(r.date)}</div>
-                  <div className="col-span-4 truncate">{r.itemName}</div>
-                  <div className="col-span-1 truncate">{r.unit}</div>
-                  <div className="col-span-1 truncate">{r.qty}</div>
-                  <div className="col-span-4">
-                    {view === "INWARD" ? (
-                      <div className="space-y-0.5">
-                        <div className="truncate">Price: {r.meta?.pricePerUnit ?? "—"}</div>
-                        <div className="truncate">Purchaser: {r.meta?.purchaser ?? "—"}</div>
-                        <div className="truncate">
-                          Bill: {r.meta?.billNo ?? "—"} ({r.meta?.billDate ? fmt(r.meta.billDate) : "—"})
-                        </div>
+              {pageRows.map((r) => {
+                if (report === "siteIssued") {
+                  return (
+                    <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                      <div className="col-span-2">{fmtDate(r.date)}</div>
+                      <div className="col-span-4 truncate font-medium">
+                        {r._itemName}
                       </div>
-                    ) : view === "OUTWARD_SITE" ? (
-                      <div className="space-y-0.5">
-                        <div className="truncate">To: {r.meta?.toSite ?? "—"}</div>
-                        <div className="truncate">Labor: {r.meta?.laborName ?? "—"}</div>
-                        <div className="truncate">
-                          WO / Scheme: {r.meta?.workOrder ?? "—"} / {r.meta?.scheme ?? "—"}
-                        </div>
+                      <div className="col-span-1">{r._unit}</div>
+                      <div className="col-span-1">{r.quantity ?? 0}</div>
+                      <div className="col-span-2">{r.meta?.toSite || "—"}</div>
+                      <div className="col-span-2 truncate">
+                        {[
+                          r.meta?.laborName ? `Labor: ${r.meta?.laborName}` : "",
+                          r.meta?.workOrder ? `WO: ${r.meta?.workOrder}` : "",
+                          r.meta?.scheme ? `Scheme: ${r.meta?.scheme}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" | ") || "—"}
                       </div>
-                    ) : view === "OUTWARD_FACTORY" ? (
-                      <div className="space-y-0.5">
-                        <div className="truncate">Dept: {r.meta?.toDept ?? r.meta?.department ?? "—"}</div>
-                        <div className="truncate">Employee: {r.meta?.issueEmployee ?? "—"}</div>
+                    </div>
+                  );
+                }
+
+                if (report === "factoryIssued") {
+                  return (
+                    <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                      <div className="col-span-2">{fmtDate(r.date)}</div>
+                      <div className="col-span-5 truncate font-medium">
+                        {r._itemName}
                       </div>
-                    ) : view === "RETURN" ? (
-                      <div className="truncate">{r.note || "—"}</div>
-                    ) : (
-                      <div className="truncate">{r.type}</div>
-                    )}
+                      <div className="col-span-1">{r._unit}</div>
+                      <div className="col-span-1">{r.quantity ?? 0}</div>
+                      <div className="col-span-3 truncate">
+                        {(r.meta?.toDept || r.meta?.department || "—") +
+                          (r.meta?.issueEmployee
+                            ? ` | Issue To: ${r.meta?.issueEmployee}`
+                            : "")}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (report === "outwardAll") {
+                  return (
+                    <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                      <div className="col-span-2">{fmtDate(r.date)}</div>
+                      <div className="col-span-4 truncate font-medium">
+                        {r._itemName}
+                      </div>
+                      <div className="col-span-1">{r._unit}</div>
+                      <div className="col-span-1">{r.type}</div>
+                      <div className="col-span-1">{r.quantity ?? 0}</div>
+                      <div className="col-span-3 truncate">
+                        {[
+                          r.meta?.toSite || r.meta?.toDept || r.meta?.department || "",
+                          r.meta?.laborName ? `Labor: ${r.meta?.laborName}` : "",
+                          r.meta?.workOrder ? `WO: ${r.meta?.workOrder}` : "",
+                          r.meta?.scheme ? `Scheme: ${r.meta?.scheme}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" | ") || "—"}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (report === "inward") {
+                  return (
+                    <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                      <div className="col-span-2">{fmtDate(r.date)}</div>
+                      <div className="col-span-3 truncate font-medium">
+                        {r._itemName}
+                      </div>
+                      <div className="col-span-1">{r._unit}</div>
+                      <div className="col-span-1">{r.quantity ?? 0}</div>
+                      <div className="col-span-2">{r.meta?.purchaser || "—"}</div>
+                      <div className="col-span-1">{r.meta?.billNo || "—"}</div>
+                      <div className="col-span-2">{fmtDate(r.meta?.billDate)}</div>
+                    </div>
+                  );
+                }
+
+                if (report === "return") {
+                  return (
+                    <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                      <div className="col-span-2">{fmtDate(r.date)}</div>
+                      <div className="col-span-5 truncate font-medium">
+                        {r._itemName}
+                      </div>
+                      <div className="col-span-1">{r._unit}</div>
+                      <div className="col-span-1">{r.quantity ?? 0}</div>
+                      <div className="col-span-3 truncate">
+                        {(r.meta?.returnedFrom || "—") +
+                          (r.note ? ` | ${r.note}` : "")}
+                      </div>
+                    </div>
+                  );
+                }
+
+                // all
+                return (
+                  <div key={r.id} className="grid grid-cols-12 px-4 py-3">
+                    <div className="col-span-2">{fmtDate(r.date)}</div>
+                    <div className="col-span-5 truncate font-medium">
+                      {r._itemName}
+                    </div>
+                    <div className="col-span-1">{r._unit}</div>
+                    <div className="col-span-1">{r.type}</div>
+                    <div className="col-span-3">
+                      {(r.quantity ?? 0) + (r.note ? ` | ${r.note}` : "")}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
           {/* Pagination */}
           <div className="flex items-center justify-between mt-4">
-            <div className="text-sm text-gray-600">
-              Showing{" "}
-              <strong>
-                {(page - 1) * PAGE_SIZE + 1}–
-                {Math.min(page * PAGE_SIZE, baseRows.length)}
-              </strong>{" "}
-              of <strong>{baseRows.length}</strong>
+            <div className="text-sm text-gray-500">
+              Showing {(currentPage - 1) * PER_PAGE + 1}–
+              {Math.min(currentPage * PER_PAGE, filteredRows.length)} of{" "}
+              {filteredRows.length}
             </div>
             <div className="flex items-center gap-2">
               <button
-                disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className={`px-3 py-1 rounded border ${
-                  page <= 1 ? "text-gray-400 border-gray-200" : "hover:bg-gray-50"
-                }`}
+                disabled={currentPage <= 1}
+                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
               >
                 Prev
               </button>
-              <span className="text-sm text-gray-700">
-                Page {page} / {totalPages}
-              </span>
+              <div className="text-sm">
+                Page {currentPage} / {totalPages}
+              </div>
               <button
-                disabled={page >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className={`px-3 py-1 rounded border ${
-                  page >= totalPages ? "text-gray-400 border-gray-200" : "hover:bg-gray-50"
-                }`}
+                disabled={currentPage >= totalPages}
+                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
               >
                 Next
               </button>
