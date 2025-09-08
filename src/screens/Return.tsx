@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
@@ -15,11 +15,18 @@ function todayISO() {
 export default function Return() {
   const { state, dispatch } = useInventory();
 
-  // form state
+  const itemsSorted = useMemo(
+    () => state.items.slice().sort((a, b) => a.name.localeCompare(b.name)),
+    [state.items]
+  );
+
   const [itemId, setItemId] = useState<string>("");
-  const [qty, setQty] = useState<string>("");                 // empty by default (no “0” prefix)
-  const [returnedFrom, setReturnedFrom] = useState<string>(""); 
+  const [qty, setQty] = useState<string>("");
+  const [returnedFrom, setReturnedFrom] = useState<string>("");
   const [returnDate, setReturnDate] = useState<string>(todayISO());
+
+  const selectedItem = itemId ? state.items.find((i) => i.id === itemId) : undefined;
+  const unit = selectedItem?.unit ?? "";
 
   function reset() {
     setItemId("");
@@ -36,7 +43,6 @@ export default function Return() {
     const base = state.items.find((i) => i.id === itemId);
     if (!base) return;
 
-    // We increase stock using the INWARD action, but tag movement as "RETURN" for history.
     const movement: StockMovement = {
       id: crypto.randomUUID(),
       type: "RETURN",
@@ -55,6 +61,7 @@ export default function Return() {
       reorderLevel: base.reorderLevel || 0,
     };
 
+    // We reuse the INWARD reducer to increase stock, but tag movement as RETURN
     dispatch({ type: "INWARD", payload: { item: baseItem, movement } });
 
     alert("Return transaction saved ✅");
@@ -72,7 +79,7 @@ export default function Return() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Item to Return */}
+            {/* Item */}
             <label className="block">
               <div className="text-sm font-medium text-gray-700 mb-1">Item to Return</div>
               <select
@@ -81,14 +88,11 @@ export default function Return() {
                 onChange={(e) => setItemId(e.target.value)}
               >
                 <option value="">-- Select Item --</option>
-                {state.items
-                  .slice()
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.name}
-                    </option>
-                  ))}
+                {itemsSorted.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.name}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -97,10 +101,22 @@ export default function Return() {
               <div className="text-sm font-medium text-gray-700 mb-1">Quantity</div>
               <input
                 type="number"
+                inputMode="decimal"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 10"
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
+              />
+            </label>
+
+            {/* Unit (read-only, auto-selected from item) */}
+            <label className="block">
+              <div className="text-sm font-medium text-gray-700 mb-1">Unit</div>
+              <input
+                disabled
+                className="w-full bg-gray-100 border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                value={unit}
+                placeholder="—"
               />
             </label>
 
@@ -127,7 +143,6 @@ export default function Return() {
             </label>
           </div>
 
-          {/* Actions */}
           <div className="flex items-center justify-end gap-3 mt-6">
             <button
               className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
