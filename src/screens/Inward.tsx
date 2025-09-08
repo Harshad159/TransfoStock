@@ -1,191 +1,185 @@
-import React, { useMemo, useState } from "react";
+// /src/screens/Inward.tsx
+import React, { useState } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
-import type { InventoryItem, StockMovement, Unit } from "../types";
+import type { InventoryItem, StockMovement } from "../types";
 
-const UNITS: Unit[] = ["Nos", "Kg", "Ltr", "Meter", "Set", "Box"];
-
-type PendingItem = {
-  existingId?: string;
-  newName?: string;
-  unit: Unit;
-  quantity: string;    // keep as string for clean typing
-  price: string;
-  reorder: string;
-  description: string;
-};
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 export default function Inward() {
-  const { state, dispatch } = useInventory();
+  const { dispatch } = useInventory();
 
-  // Top transaction details
-  const [txDate, setTxDate] = useState<string>(() => todayISO());
+  const [name, setName] = useState("");
+  const [unit, setUnit] = useState(""); // dropdown value
+  const [qty, setQty] = useState("");
+  const [price, setPrice] = useState("");
+  const [description, setDescription] = useState("");
+  const [openingStockDate, setOpeningStockDate] = useState(todayISO());
+  const [reorderLevel, setReorderLevel] = useState("");
   const [purchaser, setPurchaser] = useState("");
   const [billNo, setBillNo] = useState("");
-  const [billDate, setBillDate] = useState<string>(() => todayISO());
+  const [billDate, setBillDate] = useState(todayISO());
 
-  // “Items to Receive” (current editor)
-  const [selectedItemId, setSelectedItemId] = useState<string>("");
-  const [newItemName, setNewItemName] = useState("");
-  const [quantity, setQuantity] = useState<string>("");
-  const [unit, setUnit] = useState<Unit>("Nos");
-  const [price, setPrice] = useState<string>("");
-  const [reorder, setReorder] = useState<string>("");
-  const [description, setDescription] = useState("");
-
-  // Pending list before saving transaction
-  const [pending, setPending] = useState<PendingItem[]>([]);
-
-  const items = useMemo(
-    () => [...state.items].sort((a, b) => a.name.localeCompare(b.name)),
-    [state.items]
-  );
-
-  function todayISO() {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  function resetEditor() {
-    setSelectedItemId("");
-    setNewItemName("");
-    setQuantity("");
-    setUnit("Nos");
+  function reset() {
+    setName("");
+    setUnit("");
+    setQty("");
     setPrice("");
-    setReorder("");
     setDescription("");
+    setOpeningStockDate(todayISO());
+    setReorderLevel("");
+    setPurchaser("");
+    setBillNo("");
+    setBillDate(todayISO());
   }
 
-  function addItem() {
-    // minimal validation
-    if (!selectedItemId && !newItemName.trim()) {
-      alert("Select an existing item or enter a new item name.");
-      return;
-    }
-    if (!quantity || parseFloat(quantity) <= 0) {
-      alert("Quantity must be greater than 0.");
-      return;
-    }
+  function save() {
+    if (!name.trim()) return alert("Please enter item name.");
+    if (!unit) return alert("Please select a unit.");
+    const nQty = parseFloat(qty || "0");
+    if (nQty <= 0) return alert("Quantity must be greater than 0.");
 
-    setPending((prev) => [
-      ...prev,
-      {
-        existingId: selectedItemId || undefined,
-        newName: selectedItemId ? undefined : newItemName.trim(),
-        unit,
-        quantity, // keep as typed
-        price,
-        reorder,
-        description,
-      },
-    ]);
+    const newItem: InventoryItem = {
+      id: crypto.randomUUID(),
+      name: name.trim(),
+      unit,
+      purchasePrice: parseFloat(price || "0"),
+      description,
+      openingStockDate,
+      reorderLevel: parseFloat(reorderLevel || "0"),
+      currentStock: nQty,
+      history: [],
+      deleteRequested: false,
+    };
 
-    resetEditor();
-  }
+    const movement: StockMovement = {
+      id: crypto.randomUUID(),
+      type: "INWARD",
+      date: new Date().toISOString(),
+      quantity: nQty,
+      note: `Purchaser: ${purchaser || "-"}, Bill: ${billNo || "-"}, Date: ${
+        billDate || "-"
+      }`,
+    };
 
-  function removePending(idx: number) {
-    setPending((p) => p.filter((_, i) => i !== idx));
-  }
-
-  function onSaveAll() {
-    if (pending.length === 0) {
-      // allow saving a single item if user didn't click + Add Item
-      if (!selectedItemId && !newItemName.trim()) {
-        alert("Add at least one item.");
-        return;
-      }
-      if (!quantity || parseFloat(quantity) <= 0) {
-        alert("Quantity must be greater than 0.");
-        return;
-      }
-      addItem(); // pushes the current editor to pending
-    }
-
-    const list = pending.length > 0 ? pending : [];
-
-    for (const row of list) {
-      const parsedQty = parseFloat(row.quantity || "0");
-      const parsedPrice = row.price ? parseFloat(row.price) : 0;
-      const parsedReorder = row.reorder ? parseFloat(row.reorder) : 0;
-
-      // base item
-      let base: Omit<InventoryItem, "currentStock" | "history" | "deleteRequested">;
-
-      if (row.existingId) {
-        const found = state.items.find((i) => i.id === row.existingId)!;
-        base = {
-          id: found.id,
-          name: found.name,
-          unit: row.unit || found.unit,
-          purchasePrice: parsedPrice || found.purchasePrice || 0,
-          description: row.description || found.description,
-          openingStockDate: found.openingStockDate,
-          reorderLevel: parsedReorder || found.reorderLevel || 0,
-        };
-      } else {
-        base = {
-          id: crypto.randomUUID(),
-          name: row.newName!,
-          unit: row.unit,
-          purchasePrice: parsedPrice || 0,
-          description: row.description,
-          openingStockDate: billDate,
-          reorderLevel: parsedReorder || 0,
-        };
-      }
-
-      const movement: StockMovement = {
-        id: crypto.randomUUID(),
-        type: "INWARD",
-        date: new Date(txDate).toISOString(),
-        quantity: parsedQty,
-        purchaser,
-        billNo,
-        billDate,
-        note: "Inward entry",
-      };
-
-      dispatch({ type: "INWARD", payload: { item: base, movement } });
-    }
+    dispatch({ type: "INWARD", payload: { item: newItem, movement } });
 
     alert("Inward transaction saved ✅");
-    setPending([]);
-    resetEditor();
+    reset();
   }
 
   return (
-    <div className="pb-28">
+    <div className="pb-24">
       <Header title="Inward Entry" />
-      <div className="max-w-6xl mx-auto p-4 space-y-4">
-        {/* Transaction header row */}
+      <div className="max-w-6xl mx-auto p-4">
         <Card>
-          <h2 className="text-xl font-semibold mb-2">Inward Entry</h2>
-          <p className="text-gray-500 text-sm mb-4">
-            Add new materials/items into stock.
-          </p>
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold">Inward Entry</h2>
+            <p className="text-gray-500 text-sm">
+              Add new materials/items into stock.
+            </p>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Date */}
+            {/* Item Name */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Date</div>
+              <div className="text-sm font-medium mb-1">Item Name</div>
               <input
-                type="date"
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={txDate}
-                onChange={(e) => setTxDate(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. Copper Wire"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
               />
             </label>
 
-            {/* Purchaser */}
+            {/* Unit (Dropdown) */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Purchaser</div>
+              <div className="text-sm font-medium mb-1">Unit</div>
+              <select
+                className="w-full border rounded-lg px-3 py-2"
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
+              >
+                <option value="">-- Select Unit --</option>
+                <option value="Nos">Nos</option>
+                <option value="Kg">Kg</option>
+                <option value="Ltr">Ltr</option>
+                <option value="Bundles">Bundles</option>
+                <option value="Bobbins">Bobbins</option>
+              </select>
+            </label>
+
+            {/* Quantity */}
+            <label className="block">
+              <div className="text-sm font-medium mb-1">Quantity</div>
               <input
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. ABC Suppliers"
+                type="number"
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. 100"
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+              />
+            </label>
+
+            {/* Price per Unit */}
+            <label className="block">
+              <div className="text-sm font-medium mb-1">Price per Unit</div>
+              <input
+                type="number"
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. 500"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+              />
+            </label>
+
+            {/* Description */}
+            <label className="block md:col-span-2">
+              <div className="text-sm font-medium mb-1">Description</div>
+              <textarea
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. Copper winding wire 250 AMP"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </label>
+
+            {/* Opening Stock Date */}
+            <label className="block">
+              <div className="text-sm font-medium mb-1">Opening Stock Date</div>
+              <input
+                type="date"
+                className="w-full border rounded-lg px-3 py-2"
+                value={openingStockDate}
+                onChange={(e) => setOpeningStockDate(e.target.value)}
+              />
+            </label>
+
+            {/* Reorder Level */}
+            <label className="block">
+              <div className="text-sm font-medium mb-1">Reorder Level</div>
+              <input
+                type="number"
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. 20"
+                value={reorderLevel}
+                onChange={(e) => setReorderLevel(e.target.value)}
+              />
+            </label>
+
+            {/* Purchaser Name */}
+            <label className="block">
+              <div className="text-sm font-medium mb-1">Purchaser Name</div>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. John Smith"
                 value={purchaser}
                 onChange={(e) => setPurchaser(e.target.value)}
               />
@@ -193,10 +187,10 @@ export default function Inward() {
 
             {/* Bill No */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Bill No.</div>
+              <div className="text-sm font-medium mb-1">Bill No</div>
               <input
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. INV-12345"
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="e.g. INV-1234"
                 value={billNo}
                 onChange={(e) => setBillNo(e.target.value)}
               />
@@ -204,204 +198,34 @@ export default function Inward() {
 
             {/* Bill Date */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Bill Date</div>
+              <div className="text-sm font-medium mb-1">Bill Date</div>
               <input
                 type="date"
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                className="w-full border rounded-lg px-3 py-2"
                 value={billDate}
                 onChange={(e) => setBillDate(e.target.value)}
               />
             </label>
           </div>
-        </Card>
 
-        {/* Items to Receive */}
-        <Card>
-          <h3 className="text-lg font-semibold mb-3">Items to Receive</h3>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Item / New Name */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Item</div>
-              <select
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={selectedItemId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setSelectedItemId(id);
-                  if (id) {
-                    const found = state.items.find((i) => i.id === id);
-                    if (found) {
-                      setUnit(found.unit);
-                      setPrice(
-                        found.purchasePrice != null && !Number.isNaN(found.purchasePrice)
-                          ? String(found.purchasePrice)
-                          : ""
-                      );
-                      setReorder(
-                        found.reorderLevel != null && !Number.isNaN(found.reorderLevel)
-                          ? String(found.reorderLevel)
-                          : ""
-                      );
-                      setDescription(found.description || "");
-                    }
-                    setNewItemName("");
-                  } else {
-                    setPrice("");
-                    setReorder("");
-                    setDescription("");
-                  }
-                }}
-              >
-                <option value="">-- Add New Item --</option>
-                {items.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">New Item Name</div>
-              <input
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. Copper Wire 12mm"
-                value={newItemName}
-                onChange={(e) => setNewItemName(e.target.value)}
-                disabled={Boolean(selectedItemId)}
-              />
-            </label>
-
-            {/* Quantity */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Quantity</div>
-              <input
-                type="number"
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 100"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
-            </label>
-
-            {/* Price per Unit */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Price per Unit</div>
-              <input
-                type="number"
-                step="0.01"
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 25.50"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-              />
-            </label>
-
-            {/* Unit */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Unit</div>
-              <select
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={unit}
-                onChange={(e) => setUnit(e.target.value as Unit)}
-              >
-                {UNITS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {/* Reorder Level */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Reorder Level</div>
-              <input
-                type="number"
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 20"
-                value={reorder}
-                onChange={(e) => setReorder(e.target.value)}
-              />
-            </label>
-
-            {/* Description (full width) */}
-            <label className="block md:col-span-2">
-              <div className="text-sm font-medium text-gray-700 mb-1">Description</div>
-              <textarea
-                rows={3}
-                className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none resize-y"
-                placeholder="Item details..."
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </label>
-          </div>
-
-          {/* Add Item */}
-          <div className="flex justify-end mt-3">
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 mt-6">
             <button
+              className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
               type="button"
-              onClick={addItem}
-              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+              onClick={reset}
             >
-              <span className="material-icons text-base">add</span>
-              Add Item
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
+              type="button"
+              onClick={save}
+            >
+              Save Transaction
             </button>
           </div>
-
-          {/* Pending list */}
-          {pending.length > 0 && (
-            <div className="mt-4 border-t pt-3">
-              <div className="text-sm font-semibold mb-2">Items added:</div>
-              <ul className="divide-y">
-                {pending.map((p, idx) => (
-                  <li key={idx} className="py-2 flex justify-between items-center">
-                    <div>
-                      <span className="font-medium">
-                        {p.existingId
-                          ? state.items.find((i) => i.id === p.existingId)?.name
-                          : p.newName}
-                      </span>{" "}
-                      <span className="text-gray-500">
-                        — {p.quantity} {p.unit}
-                      </span>
-                      {p.price && <span className="text-gray-500"> · ₹{p.price}</span>}
-                    </div>
-                    <button
-                      className="text-red-600 text-sm"
-                      onClick={() => removePending(idx)}
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
         </Card>
-
-        {/* Footer actions */}
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              setPending([]);
-              resetEditor();
-            }}
-            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onSaveAll}
-            className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
-          >
-            Save Transaction
-          </button>
-        </div>
       </div>
     </div>
   );
