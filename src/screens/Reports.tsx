@@ -3,14 +3,12 @@ import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 
-/** Movement types (be flexible with older data) */
 const T_IN = "INWARD";
 const T_OUT = "OUTWARD";
 const T_OUT_SITE = "OUTWARD_SITE";
 const T_OUT_FACTORY = "OUTWARD_FACTORY";
 const T_RETURN = "RETURN";
 
-/** Report modes */
 type Mode =
   | "ALL"
   | "INWARD"
@@ -35,7 +33,6 @@ function formatDateISO(d: string | number | Date) {
   }
 }
 
-/** If a string looks like a date, format it; otherwise show raw */
 function asDisplayDate(s?: string) {
   if (!s) return "";
   const t = Date.parse(s);
@@ -71,14 +68,14 @@ function parseInwardFromNote(note?: string) {
   return res;
 }
 
-/** Parse outward note (site/factory): supports Given To / Dept / Site, Labor, WO, Scheme, Employee */
+/** Parse outward note (site/factory) */
 function parseOutwardFromNote(note?: string) {
   const res: {
     toDept?: string;
     laborName?: string;
     workOrder?: string;
     scheme?: string;
-    employeeName?: string; // for factory issue
+    employeeName?: string; // factory
   } = {};
   if (!note) return res;
   const parts = note.split("|").map((s) => s.trim());
@@ -98,15 +95,14 @@ function parseOutwardFromNote(note?: string) {
   return res;
 }
 
-/** Normalize everything into rows we can filter/export */
 function useNormalizedRows() {
   const { state } = useInventory();
 
   return useMemo(() => {
     const rows: Array<{
       id: string;
-      date: string;
-      dateDisplay: string;
+      date: string;            // transaction date ISO (NOT bill date)
+      dateDisplay: string;     // formatted txn date
       itemId: string;
       itemName: string;
       unit: string;
@@ -114,19 +110,17 @@ function useNormalizedRows() {
       rawType: string;
       niceType: string;
 
-      // inward extras
       purchaser?: string;
       billNo?: string;
       billDate?: string;
       billDateDisplay?: string;
       pricePerUnit?: number;
 
-      // outward extras
       toDept?: string;
       laborName?: string;
       workOrder?: string;
       scheme?: string;
-      employeeName?: string; // NEW for factory issue
+      employeeName?: string;
 
       note?: string;
     }> = [];
@@ -135,7 +129,7 @@ function useNormalizedRows() {
       for (const mv of item.history || []) {
         const rawType = String(mv.type || "").toUpperCase();
 
-        // Label outward subtype
+        // choose outward label
         let niceType = rawType;
         if (rawType === T_OUT_SITE) niceType = "OUTWARD (Site)";
         else if (rawType === T_OUT_FACTORY) niceType = "OUTWARD (Factory)";
@@ -146,10 +140,19 @@ function useNormalizedRows() {
           else niceType = "OUTWARD";
         }
 
+        // IMPORTANT: transaction date (never bill date)
+        const txnDateIso: string =
+          (mv as any).txnDate ||
+          (mv as any).createdAt ||
+          (mv as any).created_at ||
+          (mv as any).timestamp ||
+          mv.date ||                          // last resort
+          new Date().toISOString();
+
         const base: any = {
           id: mv.id || crypto.randomUUID(),
-          date: mv.date || new Date().toISOString(),
-          dateDisplay: formatDateISO(mv.date || new Date()),
+          date: txnDateIso,
+          dateDisplay: formatDateISO(txnDateIso),
           itemId: item.id,
           itemName: item.name,
           unit: item.unit,
@@ -160,23 +163,24 @@ function useNormalizedRows() {
         };
 
         // structured fields if present
-        if (mv.purchaser) base.purchaser = mv.purchaser;
-        if (mv.billNo) base.billNo = mv.billNo;
-        if (mv.billDate) base.billDate = mv.billDate;
-        if (mv.pricePerUnit != null) base.pricePerUnit = Number(mv.pricePerUnit);
+        if ((mv as any).purchaser) base.purchaser = (mv as any).purchaser;
+        if ((mv as any).billNo) base.billNo = (mv as any).billNo;
+        if ((mv as any).billDate) base.billDate = (mv as any).billDate;
+        if ((mv as any).pricePerUnit != null)
+          base.pricePerUnit = Number((mv as any).pricePerUnit);
 
-        if (mv.toDept) base.toDept = mv.toDept;
-        if (mv.laborName) base.laborName = mv.laborName;
-        if (mv.workOrder) base.workOrder = mv.workOrder;
-        if (mv.scheme) base.scheme = mv.scheme;
-        if (mv.employeeName) base.employeeName = mv.employeeName;
+        if ((mv as any).toDept) base.toDept = (mv as any).toDept;
+        if ((mv as any).laborName) base.laborName = (mv as any).laborName;
+        if ((mv as any).workOrder) base.workOrder = (mv as any).workOrder;
+        if ((mv as any).scheme) base.scheme = (mv as any).scheme;
+        if ((mv as any).employeeName) base.employeeName = (mv as any).employeeName;
 
         // Fallback parse from note
         if (rawType === T_IN) {
           const p = parseInwardFromNote(mv.note);
           base.purchaser ??= p.purchaser;
           base.billNo ??= p.billNo;
-          base.billDate ??= p.billDate;
+          base.billDate ??= p.billDate; // used only as bill date, not txn date
           if (base.pricePerUnit == null && p.pricePerUnit != null)
             base.pricePerUnit = p.pricePerUnit;
         } else if (
@@ -192,7 +196,6 @@ function useNormalizedRows() {
           base.employeeName ??= p.employeeName;
         }
 
-        // Friendly bill-date display
         base.billDateDisplay = asDisplayDate(base.billDate);
 
         rows.push(base);
@@ -413,7 +416,7 @@ export default function Reports() {
             </button>
           </div>
 
-          {/* Header row varies by mode */}
+          {/* header rows */}
           {mode === "INWARD" ? (
             <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
               <div className="col-span-2">DATE</div>
@@ -464,7 +467,7 @@ export default function Reports() {
             </div>
           )}
 
-          {/* Rows */}
+          {/* rows */}
           {filtered.length === 0 ? (
             <div className="text-gray-600 px-4 py-8">No entries.</div>
           ) : (
