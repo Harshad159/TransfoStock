@@ -3,7 +3,7 @@ import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 
-/** Known movement types (we’ll be generous to match whatever is saved) */
+/** Movement types (be flexible with older data) */
 const T_IN = "INWARD";
 const T_OUT = "OUTWARD";
 const T_OUT_SITE = "OUTWARD_SITE";
@@ -18,7 +18,6 @@ type Mode =
   | "OUTWARD_SITE"
   | "OUTWARD_FACTORY";
 
-/** Display-friendly label */
 const MODE_LABEL: Record<Mode, string> = {
   ALL: "All Transactions",
   INWARD: "Inward",
@@ -27,7 +26,6 @@ const MODE_LABEL: Record<Mode, string> = {
   OUTWARD_FACTORY: "Factory Material Issued",
 };
 
-/** Small helpers */
 function formatDateISO(d: string | number | Date) {
   try {
     const dd = new Date(d);
@@ -36,12 +34,20 @@ function formatDateISO(d: string | number | Date) {
     return "";
   }
 }
+
+/** If a string looks like a date, format it; otherwise show raw */
+function asDisplayDate(s?: string) {
+  if (!s) return "";
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? formatDateISO(t) : s;
+}
+
 function num(n: unknown) {
   const v = Number(n);
   return Number.isFinite(v) ? v : 0;
 }
 
-/** Parse “Purchaser: … | Bill: … | Bill Date: … | Price: …” style notes */
+/** Parse “Purchaser: … | Bill: … | Bill Date: … | Price: …” */
 function parseInwardFromNote(note?: string) {
   const res: {
     purchaser?: string;
@@ -59,18 +65,20 @@ function parseInwardFromNote(note?: string) {
     if (k.startsWith("purchaser")) res.purchaser = v;
     else if (k === "bill" || k.startsWith("bill no")) res.billNo = v;
     else if (k.startsWith("bill date")) res.billDate = v;
-    else if (k.startsWith("price")) res.pricePerUnit = Number(v.replace(/[^0-9.]/g, ""));
+    else if (k.startsWith("price"))
+      res.pricePerUnit = Number(v.replace(/[^0-9.]/g, ""));
   }
   return res;
 }
 
-/** Parse site/factory outward note: “Site Issue | Given To: … | Labor: … | WO: … | Scheme: …” */
+/** Parse outward note (site/factory): supports Given To / Dept / Site, Labor, WO, Scheme, Employee */
 function parseOutwardFromNote(note?: string) {
   const res: {
-    toDept?: string; // dept or site or factory dept
+    toDept?: string;
     laborName?: string;
     workOrder?: string;
     scheme?: string;
+    employeeName?: string; // for factory issue
   } = {};
   if (!note) return res;
   const parts = note.split("|").map((s) => s.trim());
@@ -84,36 +92,42 @@ function parseOutwardFromNote(note?: string) {
     else if (k.startsWith("labor")) res.laborName = v;
     else if (k === "wo" || k.startsWith("work order")) res.workOrder = v;
     else if (k.startsWith("scheme")) res.scheme = v;
+    else if (k.includes("employee") || k.startsWith("issued to"))
+      res.employeeName = v;
   }
   return res;
 }
 
-/** Normalize any movement + item into a flat row for easier filtering/render/export */
+/** Normalize everything into rows we can filter/export */
 function useNormalizedRows() {
   const { state } = useInventory();
 
   return useMemo(() => {
     const rows: Array<{
       id: string;
-      date: string; // ISO
+      date: string;
       dateDisplay: string;
       itemId: string;
       itemName: string;
       unit: string;
       qty: number;
       rawType: string;
-      niceType: string; // “INWARD”, “OUTWARD (Site)”, etc.
-      // Inward extras
+      niceType: string;
+
+      // inward extras
       purchaser?: string;
       billNo?: string;
       billDate?: string;
+      billDateDisplay?: string;
       pricePerUnit?: number;
-      // Outward extras
+
+      // outward extras
       toDept?: string;
       laborName?: string;
       workOrder?: string;
       scheme?: string;
-      // a free-form fallback
+      employeeName?: string; // NEW for factory issue
+
       note?: string;
     }> = [];
 
@@ -121,20 +135,18 @@ function useNormalizedRows() {
       for (const mv of item.history || []) {
         const rawType = String(mv.type || "").toUpperCase();
 
-        // Decide nicer type label + outward subtype
+        // Label outward subtype
         let niceType = rawType;
         if (rawType === T_OUT_SITE) niceType = "OUTWARD (Site)";
         else if (rawType === T_OUT_FACTORY) niceType = "OUTWARD (Factory)";
         else if (rawType === T_OUT) {
-          // if note hints, refine label
           const n = (mv.note || "").toLowerCase();
           if (n.includes("site issue")) niceType = "OUTWARD (Site)";
           else if (n.includes("factory")) niceType = "OUTWARD (Factory)";
           else niceType = "OUTWARD";
         }
 
-        // Common
-        const baseRow: any = {
+        const base: any = {
           id: mv.id || crypto.randomUUID(),
           date: mv.date || new Date().toISOString(),
           dateDisplay: formatDateISO(mv.date || new Date()),
@@ -147,48 +159,51 @@ function useNormalizedRows() {
           note: mv.note || "",
         };
 
-        // Pull any structured extras if they exist
-        if (mv.purchaser) baseRow.purchaser = mv.purchaser;
-        if (mv.billNo) baseRow.billNo = mv.billNo;
-        if (mv.billDate) baseRow.billDate = mv.billDate;
-        if (mv.pricePerUnit != null) baseRow.pricePerUnit = Number(mv.pricePerUnit);
+        // structured fields if present
+        if (mv.purchaser) base.purchaser = mv.purchaser;
+        if (mv.billNo) base.billNo = mv.billNo;
+        if (mv.billDate) base.billDate = mv.billDate;
+        if (mv.pricePerUnit != null) base.pricePerUnit = Number(mv.pricePerUnit);
 
-        if (mv.toDept) baseRow.toDept = mv.toDept;
-        if (mv.laborName) baseRow.laborName = mv.laborName;
-        if (mv.workOrder) baseRow.workOrder = mv.workOrder;
-        if (mv.scheme) baseRow.scheme = mv.scheme;
+        if (mv.toDept) base.toDept = mv.toDept;
+        if (mv.laborName) base.laborName = mv.laborName;
+        if (mv.workOrder) base.workOrder = mv.workOrder;
+        if (mv.scheme) base.scheme = mv.scheme;
+        if (mv.employeeName) base.employeeName = mv.employeeName;
 
-        // Fallback: parse from note for older data
+        // Fallback parse from note
         if (rawType === T_IN) {
           const p = parseInwardFromNote(mv.note);
-          baseRow.purchaser ??= p.purchaser;
-          baseRow.billNo ??= p.billNo;
-          baseRow.billDate ??= p.billDate;
-          if (baseRow.pricePerUnit == null && p.pricePerUnit != null)
-            baseRow.pricePerUnit = p.pricePerUnit;
+          base.purchaser ??= p.purchaser;
+          base.billNo ??= p.billNo;
+          base.billDate ??= p.billDate;
+          if (base.pricePerUnit == null && p.pricePerUnit != null)
+            base.pricePerUnit = p.pricePerUnit;
         } else if (
           rawType === T_OUT ||
           rawType === T_OUT_SITE ||
           rawType === T_OUT_FACTORY
         ) {
           const p = parseOutwardFromNote(mv.note);
-          baseRow.toDept ??= p.toDept;
-          baseRow.laborName ??= p.laborName;
-          baseRow.workOrder ??= p.workOrder;
-          baseRow.scheme ??= p.scheme;
+          base.toDept ??= p.toDept;
+          base.laborName ??= p.laborName;
+          base.workOrder ??= p.workOrder;
+          base.scheme ??= p.scheme;
+          base.employeeName ??= p.employeeName;
         }
 
-        rows.push(baseRow);
+        // Friendly bill-date display
+        base.billDateDisplay = asDisplayDate(base.billDate);
+
+        rows.push(base);
       }
     }
 
-    // sort desc by date
     rows.sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : 0));
     return rows;
   }, [state.items]);
 }
 
-/** CSV helper */
 function toCSV(rows: string[][]) {
   return rows
     .map((r) =>
@@ -209,10 +224,8 @@ export default function Reports() {
   const [mode, setMode] = useState<Mode>("ALL");
   const [laborFilter, setLaborFilter] = useState<string>("All Labors");
 
-  /** Filtered list for current mode */
   const filtered = useMemo(() => {
     let list = rows;
-
     switch (mode) {
       case "INWARD":
         list = rows.filter((r) => r.rawType === T_IN);
@@ -240,29 +253,21 @@ export default function Reports() {
         );
         break;
       default:
-        // ALL
         list = rows;
     }
-
-    // Optional labor filter (only meaningful in site mode)
     if (mode === "OUTWARD_SITE" && laborFilter !== "All Labors") {
       list = list.filter((r) => (r.laborName || "") === laborFilter);
     }
-
     return list;
   }, [rows, mode, laborFilter]);
 
-  /** Distinct labor names for site dropdown */
   const siteLabors = useMemo(() => {
     if (mode !== "OUTWARD_SITE") return [];
     const set = new Set<string>();
-    filtered.forEach((r) => {
-      if (r.laborName) set.add(r.laborName);
-    });
+    filtered.forEach((r) => r.laborName && set.add(r.laborName));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [filtered, mode]);
 
-  /** Export handler */
   function onExport() {
     let header: string[] = [];
     const out: string[][] = [];
@@ -287,11 +292,11 @@ export default function Reports() {
           r.pricePerUnit != null ? String(r.pricePerUnit) : "",
           r.purchaser || "",
           r.billNo || "",
-          r.billDate || "",
+          r.billDateDisplay || "",
         ]);
       });
     } else if (mode === "OUTWARD_ALL") {
-      header = ["Date", "Item Name", "Unit", "Type", "Qty", "To / Dept", "Labor / WO / Scheme"];
+      header = ["Date", "Item Name", "Unit", "Type", "Qty", "To / Dept"];
       filtered.forEach((r) => {
         out.push([
           r.dateDisplay,
@@ -300,7 +305,6 @@ export default function Reports() {
           r.niceType,
           String(r.qty),
           r.toDept || "",
-          [r.laborName, r.workOrder, r.scheme].filter(Boolean).join(" | "),
         ]);
       });
     } else if (mode === "OUTWARD_SITE") {
@@ -318,7 +322,7 @@ export default function Reports() {
         ]);
       });
     } else if (mode === "OUTWARD_FACTORY") {
-      header = ["Date", "Item Name", "Unit", "Qty", "Department"];
+      header = ["Date", "Item Name", "Unit", "Qty", "Department", "Issue to Employee"];
       filtered.forEach((r) => {
         out.push([
           r.dateDisplay,
@@ -326,13 +330,19 @@ export default function Reports() {
           r.unit,
           String(r.qty),
           r.toDept || "",
+          r.employeeName || "",
         ]);
       });
     } else {
-      // ALL
       header = ["Date", "Item Name", "Unit", "Qty", "Type / Note"];
       filtered.forEach((r) => {
-        out.push([r.dateDisplay, r.itemName, r.unit, String(r.qty), r.niceType + (r.note ? ` | ${r.note}` : "")]);
+        out.push([
+          r.dateDisplay,
+          r.itemName,
+          r.unit,
+          String(r.qty),
+          r.niceType + (r.note ? ` | ${r.note}` : ""),
+        ]);
       });
     }
 
@@ -403,7 +413,7 @@ export default function Reports() {
             </button>
           </div>
 
-          {/* Table header changes per mode */}
+          {/* Header row varies by mode */}
           {mode === "INWARD" ? (
             <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
               <div className="col-span-2">DATE</div>
@@ -438,13 +448,13 @@ export default function Reports() {
           ) : mode === "OUTWARD_FACTORY" ? (
             <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
               <div className="col-span-2">DATE</div>
-              <div className="col-span-4">ITEM NAME</div>
+              <div className="col-span-3">ITEM NAME</div>
               <div className="col-span-1">UNIT</div>
               <div className="col-span-1">QTY</div>
-              <div className="col-span-4">DEPARTMENT</div>
+              <div className="col-span-3">DEPARTMENT</div>
+              <div className="col-span-2">ISSUE TO EMPLOYEE</div>
             </div>
           ) : (
-            // ALL
             <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
               <div className="col-span-2">DATE</div>
               <div className="col-span-4">ITEM NAME</div>
@@ -470,7 +480,7 @@ export default function Reports() {
                       <div className="col-span-1">{r.pricePerUnit ?? ""}</div>
                       <div className="col-span-2 truncate">{r.purchaser || ""}</div>
                       <div className="col-span-1 truncate">{r.billNo || ""}</div>
-                      <div className="col-span-1 truncate">{r.billDate || ""}</div>
+                      <div className="col-span-1 truncate">{r.billDateDisplay || ""}</div>
                     </div>
                   );
                 } else if (mode === "OUTWARD_ALL") {
@@ -501,14 +511,14 @@ export default function Reports() {
                   return (
                     <div key={r.id} className="grid grid-cols-12 px-4 py-3">
                       <div className="col-span-2">{r.dateDisplay}</div>
-                      <div className="col-span-4 truncate">{r.itemName}</div>
+                      <div className="col-span-3 truncate">{r.itemName}</div>
                       <div className="col-span-1">{r.unit}</div>
                       <div className="col-span-1">{r.qty}</div>
-                      <div className="col-span-4 truncate">{r.toDept || ""}</div>
+                      <div className="col-span-3 truncate">{r.toDept || ""}</div>
+                      <div className="col-span-2 truncate">{r.employeeName || ""}</div>
                     </div>
                   );
                 } else {
-                  // ALL
                   return (
                     <div key={r.id} className="grid grid-cols-12 px-4 py-3">
                       <div className="col-span-2">{r.dateDisplay}</div>
