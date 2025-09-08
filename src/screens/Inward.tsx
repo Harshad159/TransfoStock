@@ -2,199 +2,170 @@ import React, { useMemo, useState } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
-import type { InventoryItem, StockMovement } from "../types";
 
-/** Helpers */
-function todayISO() {
+// Small helpers
+const isoToday = () => {
   const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-type StagedRow = {
-  id: string; // local row id
-  existingItemId?: string; // if selected from existing
-  name: string;
-  unit: string;
-  qty: string; // keep as string to avoid prefixed 0
-  pricePerUnit: string;
-  reorderLevel: string;
-  description: string;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
 };
 
-/** Units list (you can tune the order) */
-const UNITS = [
-  "Nos",
-  "Kg",
-  "Litre",
-  "Meter",
-  "Coil",
-  "Bundle",
-  "Bobbin",
-  "Drum",
-  "Roll",
-  "Piece",
-  "Set",
-];
+const UNITS = ["Nos", "Kg", "Litre", "Meter", "Bundle", "Bobbins"] as const;
 
 export default function Inward() {
   const { state, dispatch } = useInventory();
 
-  /** Bill / header fields */
-  const [inwardDate, setInwardDate] = useState<string>(todayISO());
-  const [purchaser, setPurchaser] = useState<string>("");
+  // Header (bill-level) fields
+  const [inwardDate, setInwardDate] = useState<string>(isoToday()); // shop in-date
   const [billNo, setBillNo] = useState<string>("");
-  const [billDate, setBillDate] = useState<string>(todayISO());
+  const [billDate, setBillDate] = useState<string>(isoToday()); // bill date
+  const [purchaser, setPurchaser] = useState<string>("");
 
-  /** Row editor state */
-  const [existingItemId, setExistingItemId] = useState<string>("");
-  const [newItemName, setNewItemName] = useState<string>("");
-  const [unit, setUnit] = useState<string>("Nos");
-  const [qty, setQty] = useState<string>("");
-  const [pricePerUnit, setPricePerUnit] = useState<string>("");
-  const [reorderLevel, setReorderLevel] = useState<string>("");
-  const [description, setDescription] = useState<string>("");
+  // One item row (we allow adding many rows)
+  type InwardRow = {
+    itemId: string; // "" means adding a new item name
+    newName: string;
+    qty: string;
+    unit: string;
+    price: string;
+    reorderLevel: string;
+    description: string;
+  };
 
-  /** Staged rows (items for this bill) */
-  const [rows, setRows] = useState<StagedRow[]>([]);
+  const [rows, setRows] = useState<InwardRow[]>([
+    {
+      itemId: "",
+      newName: "",
+      qty: "",
+      unit: "Nos",
+      price: "",
+      reorderLevel: "",
+      description: "",
+    },
+  ]);
 
-  /** Derived: all items sorted for the selector */
-  const allItems = useMemo(
-    () => [...state.items].sort((a, b) => a.name.localeCompare(b.name)),
+  const itemsSorted = useMemo(
+    () => state.items.slice().sort((a: any, b: any) => a.name.localeCompare(b.name)),
     [state.items]
   );
 
-  /** When an existing item is picked, prefill unit / price / reorder (if present) */
-  function onPickExisting(itemId: string) {
-    setExistingItemId(itemId);
-    setNewItemName("");
-    const found = state.items.find((i) => i.id === itemId);
-    if (found) {
-      if (found.unit) setUnit(found.unit);
-      if (found.purchasePrice != null)
-        setPricePerUnit(String(found.purchasePrice));
-      if (found.reorderLevel != null)
-        setReorderLevel(String(found.reorderLevel));
-      if (found.description) setDescription(found.description);
-    }
+  function setRow<K extends keyof InwardRow>(idx: number, key: K, val: InwardRow[K]) {
+    setRows((prev) => {
+      const copy = prev.slice();
+      copy[idx] = { ...copy[idx], [key]: val };
+      // If picking an existing item, auto fill unit & price if available
+      if (key === "itemId") {
+        const found = state.items.find((it: any) => it.id === val);
+        if (found) {
+          copy[idx].unit = found.unit ?? "Nos";
+          if (found.purchasePrice != null) copy[idx].price = String(found.purchasePrice);
+          if (found.reorderLevel != null) copy[idx].reorderLevel = String(found.reorderLevel);
+        }
+      }
+      return copy;
+    });
   }
 
-  /** Add one row to the staged list */
   function addRow() {
-    // must choose either existing or new name
-    const name = existingItemId
-      ? state.items.find((i) => i.id === existingItemId)?.name || ""
-      : newItemName.trim();
-
-    if (!name) {
-      alert("Select an existing item or enter a new item name.");
-      return;
-    }
-    const nQty = parseFloat(qty || "0");
-    if (!nQty || nQty <= 0) {
-      alert("Quantity must be greater than 0.");
-      return;
-    }
-
-    const row: StagedRow = {
-      id: crypto.randomUUID(),
-      existingItemId: existingItemId || undefined,
-      name,
-      unit: unit || "Nos",
-      qty,
-      pricePerUnit,
-      reorderLevel,
-      description,
-    };
-    setRows((r) => [row, ...r]);
-
-    // clear the row editor but keep bill header
-    setExistingItemId("");
-    setNewItemName("");
-    setUnit("Nos");
-    setQty("");
-    setPricePerUnit("");
-    setReorderLevel("");
-    setDescription("");
+    setRows((r) => [
+      ...r,
+      {
+        itemId: "",
+        newName: "",
+        qty: "",
+        unit: "Nos",
+        price: "",
+        reorderLevel: "",
+        description: "",
+      },
+    ]);
   }
 
-  function removeRow(id: string) {
-    setRows((r) => r.filter((x) => x.id !== id));
+  function removeRow(i: number) {
+    setRows((r) => (r.length <= 1 ? r : r.filter((_, idx) => idx !== i)));
   }
 
-  /** Save: push all staged rows as INWARD movements under the same bill meta */
-  function saveTransaction() {
-    if (rows.length === 0) {
-      alert("Add at least one item for this bill.");
-      return;
-    }
-    const inwISO = new Date(inwardDate).toISOString();
-    const billISO = billDate ? new Date(billDate).toISOString() : undefined;
+  function resetForm() {
+    setInwardDate(isoToday());
+    setBillNo("");
+    setBillDate(isoToday());
+    setPurchaser("");
+    setRows([
+      {
+        itemId: "",
+        newName: "",
+        qty: "",
+        unit: "Nos",
+        price: "",
+        reorderLevel: "",
+        description: "",
+      },
+    ]);
+  }
 
-    for (const r of rows) {
-      const baseExisting = r.existingItemId
-        ? state.items.find((i) => i.id === r.existingItemId)
-        : undefined;
+  // Save all rows as one bill (creates movements, and new items if needed)
+  function saveAll() {
+    const idOrNameMissing = rows.some((r) => !r.itemId && !r.newName.trim());
+    if (idOrNameMissing) return alert("Please select an item or enter a new item name.");
+    const badQty = rows.some((r) => !Number(r.qty));
+    if (badQty) return alert("Every row must have a valid quantity.");
 
-      // Build the minimal base item object the reducer expects
-      const baseItem: Omit<
-        InventoryItem,
-        "currentStock" | "history" | "deleteRequested"
-      > = {
-        id: baseExisting?.id || crypto.randomUUID(),
-        name: r.name,
-        unit: r.unit,
-        purchasePrice: parseFloat(r.pricePerUnit || "0") || 0,
-        description: r.description || "",
-        openingStockDate: baseExisting?.openingStockDate,
-        reorderLevel: parseFloat(r.reorderLevel || "0") || 0,
-      };
+    // Create movements per row
+    rows.forEach((r) => {
+      const qtyNum = Number(r.qty || 0);
+      const priceNum = Number(r.price || 0);
+      const reorderNum = Number(r.reorderLevel || 0);
+      const unit = r.unit || "Nos";
+      const desc = r.description || "";
 
-      // Movement with bill metadata (cast to allow extra fields)
-      const movement = {
+      // Build the item payload used by your reducer for INWARD
+      // (We keep fields your reducer expects; extra fields are ignored by reducer.)
+      const itemPayload: any = r.itemId
+        ? // Existing item
+          {
+            id: r.itemId,
+            name: (state.items.find((it: any) => it.id === r.itemId) || {}).name || "",
+            unit,
+            purchasePrice: priceNum,
+            description: desc,
+            reorderLevel: reorderNum,
+            openingStockDate: inwardDate, // harmless if your reducer doesn't use it
+          }
+        : // New item
+          {
+            id: crypto.randomUUID(),
+            name: r.newName.trim(),
+            unit,
+            purchasePrice: priceNum,
+            description: desc,
+            reorderLevel: reorderNum,
+            openingStockDate: inwardDate,
+          };
+
+      const movement: any = {
         id: crypto.randomUUID(),
         type: "INWARD",
-        date: inwISO, // THIS is the 'Inward Date' used in first column of Reports
-        quantity: parseFloat(r.qty || "0"),
-        // keep a short note; detailed meta goes as fields below
-        note: `Inward entry`,
-        purchaser: purchaser || "",
-        billNo: billNo || "",
-        billDate: billISO || null,
-        pricePerUnit: parseFloat(r.pricePerUnit || "0") || 0,
-      } as StockMovement & Record<string, any>;
+        // IMPORTANT:
+        //  - date: the *inward date* (what appears as the first “DATE” column in reports)
+        //  - billDate kept separately on movement meta so we can export it too
+        date: new Date(inwardDate).toISOString(),
+        quantity: qtyNum,
+        note: "Inward entry",
+        // attach bill-level info so Reports can export Purchaser/Bill/Price:
+        meta: {
+          purchaser,
+          billNo,
+          billDate,
+          pricePerUnit: priceNum,
+        },
+      };
 
-      dispatch({ type: "INWARD", payload: { item: baseItem, movement } });
-    }
+      dispatch({ type: "INWARD", payload: { item: itemPayload, movement } });
+    });
 
-    alert("Inward transaction saved ✅");
-
-    // reset everything
-    setInwardDate(todayISO());
-    setPurchaser("");
-    setBillNo("");
-    setBillDate(todayISO());
-    setExistingItemId("");
-    setNewItemName("");
-    setUnit("Nos");
-    setQty("");
-    setPricePerUnit("");
-    setReorderLevel("");
-    setDescription("");
-    setRows([]);
-  }
-
-  function cancelAll() {
-    setExistingItemId("");
-    setNewItemName("");
-    setUnit("Nos");
-    setQty("");
-    setPricePerUnit("");
-    setReorderLevel("");
-    setDescription("");
-    setRows([]);
+    alert("Saved ✅");
+    resetForm();
   }
 
   return (
@@ -202,20 +173,10 @@ export default function Inward() {
       <Header title="Inward Entry" />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* Heading */}
-          <div className="mb-4">
-            <h2 className="text-xl font-semibold">Inward Entry</h2>
-            <p className="text-gray-500 text-sm">
-              Add new materials/items into stock.
-            </p>
-          </div>
-
-          {/* Bill / header form */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          {/* Bill level */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Inward Date
-              </div>
+              <div className="text-sm font-medium text-gray-700 mb-1">Inward Date</div>
               <input
                 type="date"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
@@ -225,9 +186,7 @@ export default function Inward() {
             </label>
 
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Purchaser
-              </div>
+              <div className="text-sm font-medium text-gray-700 mb-1">Purchaser</div>
               <input
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. ABC Suppliers"
@@ -237,9 +196,7 @@ export default function Inward() {
             </label>
 
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Bill No.
-              </div>
+              <div className="text-sm font-medium text-gray-700 mb-1">Bill No.</div>
               <input
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. INV-12345"
@@ -249,9 +206,7 @@ export default function Inward() {
             </label>
 
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Bill Date
-              </div>
+              <div className="text-sm font-medium text-gray-700 mb-1">Bill Date</div>
               <input
                 type="date"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
@@ -261,188 +216,135 @@ export default function Inward() {
             </label>
           </div>
 
-          {/* Items editor */}
-          <h3 className="text-lg font-semibold mb-3">Items to Receive</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Item pick / new name */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Item</div>
-              <select
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={existingItemId}
-                onChange={(e) => onPickExisting(e.target.value)}
-              >
-                <option value="">-- Add New Item --</option>
-                {allItems.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+          {/* Rows */}
+          <h3 className="mt-8 mb-2 text-lg font-semibold">Items to Receive</h3>
+          <div className="flex flex-col gap-6">
+            {rows.map((r, idx) => (
+              <div key={idx} className="grid grid-cols-1 md:grid-cols-2 gap-4 border rounded-lg p-4">
+                {/* Existing item OR new item name */}
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Item</div>
+                  <select
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    value={r.itemId}
+                    onChange={(e) => setRow(idx, "itemId", e.target.value)}
+                  >
+                    <option value="">-- Add New Item --</option>
+                    {itemsSorted.map((it: any) => (
+                      <option key={it.id} value={it.id}>
+                        {it.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                New Item Name
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">New Item Name</div>
+                  <input
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="e.g. Copper Wire 12mm"
+                    value={r.newName}
+                    onChange={(e) => setRow(idx, "newName", e.target.value)}
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Quantity</div>
+                  <input
+                    type="number"
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="e.g. 100"
+                    value={r.qty}
+                    onChange={(e) => setRow(idx, "qty", e.target.value)}
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Price per Unit</div>
+                  <input
+                    type="number"
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="e.g. 25.50"
+                    value={r.price}
+                    onChange={(e) => setRow(idx, "price", e.target.value)}
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Unit</div>
+                  <select
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    value={r.unit}
+                    onChange={(e) => setRow(idx, "unit", e.target.value)}
+                  >
+                    {UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Reorder Level</div>
+                  <input
+                    type="number"
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="e.g. 20"
+                    value={r.reorderLevel}
+                    onChange={(e) => setRow(idx, "reorderLevel", e.target.value)}
+                  />
+                </label>
+
+                <label className="md:col-span-2 block">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Description</div>
+                  <textarea
+                    rows={2}
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="Item details…"
+                    value={r.description}
+                    onChange={(e) => setRow(idx, "description", e.target.value)}
+                  />
+                </label>
+
+                <div className="md:col-span-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => removeRow(idx)}
+                    className="px-3 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700"
+                  >
+                    Remove row
+                  </button>
+                </div>
               </div>
-              <input
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. Copper Wire 12mm"
-                value={newItemName}
-                onChange={(e) => {
-                  setNewItemName(e.target.value);
-                  if (e.target.value) setExistingItemId("");
-                }}
-              />
-            </label>
-
-            {/* Quantity */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Quantity
-              </div>
-              <input
-                type="number"
-                inputMode="decimal"
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 100"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-              />
-            </label>
-
-            {/* Price per Unit */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Price per Unit
-              </div>
-              <input
-                type="number"
-                inputMode="decimal"
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 25.50"
-                value={pricePerUnit}
-                onChange={(e) => setPricePerUnit(e.target.value)}
-              />
-            </label>
-
-            {/* Unit */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Unit</div>
-              <select
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-              >
-                {UNITS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {/* Reorder level */}
-            <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Reorder Level
-              </div>
-              <input
-                type="number"
-                inputMode="decimal"
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="e.g. 20"
-                value={reorderLevel}
-                onChange={(e) => setReorderLevel(e.target.value)}
-              />
-            </label>
-
-            {/* Description */}
-            <label className="block md:col-span-2">
-              <div className="text-sm font-medium text-gray-700 mb-1">
-                Description
-              </div>
-              <textarea
-                rows={3}
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="Item details…"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </label>
+            ))}
           </div>
 
-          <div className="mt-4">
+          <div className="flex items-center justify-between mt-6">
             <button
               type="button"
               onClick={addRow}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium"
+              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium"
             >
-              <span className="material-icons text-sm">add</span>
-              Add Item
+              + Add Item
             </button>
-          </div>
 
-          {/* Staged items table */}
-          {rows.length > 0 && (
-            <div className="mt-6">
-              <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
-                <div className="col-span-4">ITEM NAME</div>
-                <div className="col-span-1">UNIT</div>
-                <div className="col-span-2">QTY</div>
-                <div className="col-span-2">PRICE/UNIT</div>
-                <div className="col-span-2">REORDER</div>
-                <div className="col-span-1 text-right">ACTIONS</div>
-              </div>
-              <div className="divide-y">
-                {rows.map((r) => (
-                  <div
-                    key={r.id}
-                    className="grid grid-cols-12 px-4 py-3 items-center"
-                  >
-                    <div className="col-span-4 truncate font-medium">
-                      {r.name}
-                    </div>
-                    <div className="col-span-1">{r.unit}</div>
-                    <div className="col-span-2">{r.qty}</div>
-                    <div className="col-span-2">
-                      {(parseFloat(r.pricePerUnit || "0") || 0).toFixed(2)}
-                    </div>
-                    <div className="col-span-2">
-                      {parseFloat(r.reorderLevel || "0") || 0}
-                    </div>
-                    <div className="col-span-1 text-right">
-                      <button
-                        className="text-red-600 hover:underline"
-                        onClick={() => removeRow(r.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={resetForm}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveAll}
+                className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium"
+              >
+                Save Transaction
+              </button>
             </div>
-          )}
-
-          {/* Footer actions */}
-          <div className="flex items-center justify-end gap-3 mt-6">
-            <button
-              className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
-              type="button"
-              onClick={cancelAll}
-            >
-              Cancel
-            </button>
-            <button
-              className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
-              type="button"
-              onClick={saveTransaction}
-              disabled={rows.length === 0}
-              title={rows.length === 0 ? "Add at least one item" : ""}
-            >
-              Save Transaction
-            </button>
           </div>
         </Card>
       </div>
