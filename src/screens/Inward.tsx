@@ -4,7 +4,7 @@ import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 import type { InventoryItem, StockMovement } from "../types";
 
-/** Keep the familiar “today” helper */
+/** Helpers */
 function todayISO() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -13,196 +13,189 @@ function todayISO() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-/** Added more unit choices (incl. Bundles, Bobbins) */
-const UNIT_OPTIONS = [
+type StagedRow = {
+  id: string; // local row id
+  existingItemId?: string; // if selected from existing
+  name: string;
+  unit: string;
+  qty: string; // keep as string to avoid prefixed 0
+  pricePerUnit: string;
+  reorderLevel: string;
+  description: string;
+};
+
+/** Units list (you can tune the order) */
+const UNITS = [
   "Nos",
   "Kg",
-  "Meter",
   "Litre",
+  "Meter",
+  "Coil",
   "Bundle",
-  "Bobbins",
-  "Set",
-  "Box",
+  "Bobbin",
+  "Drum",
   "Roll",
   "Piece",
+  "Set",
 ];
-
-type PendingRow = {
-  itemId?: string;          // existing item id (if selected)
-  newName?: string;         // new item name (if creating)
-  unit: string;
-  qty: string;              // keep as string for easy typing
-  price: string;            // optional
-  reorder: string;          // optional
-  desc: string;             // optional
-};
 
 export default function Inward() {
   const { state, dispatch } = useInventory();
 
-  // --- Bill header (same as your earlier screen) ---
-  const [date, setDate] = useState<string>(todayISO());
+  /** Bill / header fields */
+  const [inwardDate, setInwardDate] = useState<string>(todayISO());
   const [purchaser, setPurchaser] = useState<string>("");
   const [billNo, setBillNo] = useState<string>("");
   const [billDate, setBillDate] = useState<string>(todayISO());
 
-  // --- “current row” in the Items to Receive form ---
-  const [row, setRow] = useState<PendingRow>({
-    itemId: "",
-    newName: "",
-    unit: "Nos",
-    qty: "",
-    price: "",
-    reorder: "",
-    desc: "",
-  });
+  /** Row editor state */
+  const [existingItemId, setExistingItemId] = useState<string>("");
+  const [newItemName, setNewItemName] = useState<string>("");
+  const [unit, setUnit] = useState<string>("Nos");
+  const [qty, setQty] = useState<string>("");
+  const [pricePerUnit, setPricePerUnit] = useState<string>("");
+  const [reorderLevel, setReorderLevel] = useState<string>("");
+  const [description, setDescription] = useState<string>("");
 
-  // --- List of rows added with the (+ Add Item) button ---
-  const [pending, setPending] = useState<PendingRow[]>([]);
+  /** Staged rows (items for this bill) */
+  const [rows, setRows] = useState<StagedRow[]>([]);
 
-  // Sorted item options
-  const itemsSorted = useMemo(
-    () => state.items.slice().sort((a, b) => a.name.localeCompare(b.name)),
+  /** Derived: all items sorted for the selector */
+  const allItems = useMemo(
+    () => [...state.items].sort((a, b) => a.name.localeCompare(b.name)),
     [state.items]
   );
 
-  function resetAll() {
-    setDate(todayISO());
-    setPurchaser("");
-    setBillNo("");
-    setBillDate(todayISO());
-    setRow({
-      itemId: "",
-      newName: "",
-      unit: "Nos",
-      qty: "",
-      price: "",
-      reorder: "",
-      desc: "",
-    });
-    setPending([]);
+  /** When an existing item is picked, prefill unit / price / reorder (if present) */
+  function onPickExisting(itemId: string) {
+    setExistingItemId(itemId);
+    setNewItemName("");
+    const found = state.items.find((i) => i.id === itemId);
+    if (found) {
+      if (found.unit) setUnit(found.unit);
+      if (found.purchasePrice != null)
+        setPricePerUnit(String(found.purchasePrice));
+      if (found.reorderLevel != null)
+        setReorderLevel(String(found.reorderLevel));
+      if (found.description) setDescription(found.description);
+    }
   }
 
-  /** Add one row to the list, keep the UI layout you already use */
+  /** Add one row to the staged list */
   function addRow() {
-    const useExisting = !!row.itemId;
-    const useNew = !!row.newName?.trim();
+    // must choose either existing or new name
+    const name = existingItemId
+      ? state.items.find((i) => i.id === existingItemId)?.name || ""
+      : newItemName.trim();
 
-    if (!useExisting && !useNew) {
-      alert("Select an item OR type a new item name.");
+    if (!name) {
+      alert("Select an existing item or enter a new item name.");
       return;
     }
-    if (useExisting && useNew) {
-      alert("Choose existing OR new item — not both.");
-      return;
-    }
-    const nQty = parseFloat(row.qty || "0");
+    const nQty = parseFloat(qty || "0");
     if (!nQty || nQty <= 0) {
       alert("Quantity must be greater than 0.");
       return;
     }
 
-    setPending((prev) => [
-      ...prev,
-      {
-        itemId: useExisting ? row.itemId : undefined,
-        newName: useNew ? row.newName!.trim() : undefined,
-        unit: row.unit,
-        qty: row.qty,
-        price: row.price,
-        reorder: row.reorder,
-        desc: row.desc,
-      },
-    ]);
+    const row: StagedRow = {
+      id: crypto.randomUUID(),
+      existingItemId: existingItemId || undefined,
+      name,
+      unit: unit || "Nos",
+      qty,
+      pricePerUnit,
+      reorderLevel,
+      description,
+    };
+    setRows((r) => [row, ...r]);
 
-    // clear the entry row (keep unit for faster entry)
-    setRow((r) => ({
-      itemId: "",
-      newName: "",
-      unit: r.unit,
-      qty: "",
-      price: "",
-      reorder: "",
-      desc: "",
-    }));
+    // clear the row editor but keep bill header
+    setExistingItemId("");
+    setNewItemName("");
+    setUnit("Nos");
+    setQty("");
+    setPricePerUnit("");
+    setReorderLevel("");
+    setDescription("");
   }
 
-  function removeRow(idx: number) {
-    setPending((prev) => prev.filter((_, i) => i !== idx));
+  function removeRow(id: string) {
+    setRows((r) => r.filter((x) => x.id !== id));
   }
 
-  /** Save all rows under the same ‘bill’ */
-  function saveAll() {
-    if (pending.length === 0) {
-      alert("Add at least one item to receive.");
+  /** Save: push all staged rows as INWARD movements under the same bill meta */
+  function saveTransaction() {
+    if (rows.length === 0) {
+      alert("Add at least one item for this bill.");
       return;
     }
+    const inwISO = new Date(inwardDate).toISOString();
+    const billISO = billDate ? new Date(billDate).toISOString() : undefined;
 
-    pending.forEach((p) => {
-      // Resolve the base item (existing or new)
-      let base = p.itemId ? state.items.find((i) => i.id === p.itemId) : undefined;
+    for (const r of rows) {
+      const baseExisting = r.existingItemId
+        ? state.items.find((i) => i.id === r.existingItemId)
+        : undefined;
 
-      const purchasePrice = parseFloat(p.price || "0") || 0;
-      const reorderLevel = parseFloat(p.reorder || "0") || 0;
-      const quantity = parseFloat(p.qty || "0");
-
-      const movementNote = [
-        purchaser ? `Purchaser: ${purchaser}` : "",
-        billNo ? `Bill: ${billNo}` : "",
-        p.desc ? `Note: ${p.desc}` : "",
-      ]
-        .filter(Boolean)
-        .join(" | ");
-
-      const movement: StockMovement = {
-        id: crypto.randomUUID(),
-        type: "INWARD",
-        date: new Date(billDate || date).toISOString(),
-        quantity,
-        note: movementNote || "Inward",
-      };
-
-      // Prepare the “base item” structure expected by the reducer
-      let baseItem: Omit<
+      // Build the minimal base item object the reducer expects
+      const baseItem: Omit<
         InventoryItem,
         "currentStock" | "history" | "deleteRequested"
-      >;
+      > = {
+        id: baseExisting?.id || crypto.randomUUID(),
+        name: r.name,
+        unit: r.unit,
+        purchasePrice: parseFloat(r.pricePerUnit || "0") || 0,
+        description: r.description || "",
+        openingStockDate: baseExisting?.openingStockDate,
+        reorderLevel: parseFloat(r.reorderLevel || "0") || 0,
+      };
 
-      if (!base) {
-        // Create new item
-        baseItem = {
-          id: crypto.randomUUID(),
-          name: p.newName!,                 // validated earlier
-          unit: p.unit,
-          purchasePrice,
-          description: p.desc || "",
-          openingStockDate: new Date(date).toISOString(),
-          reorderLevel,
-        };
-      } else {
-        // Existing item (you can pass updated price/reorder if you want them refreshed)
-        baseItem = {
-          id: base.id,
-          name: base.name,
-          unit: base.unit,                  // keep existing unit
-          purchasePrice: base.purchasePrice ?? purchasePrice,
-          description: base.description ?? "",
-          openingStockDate: base.openingStockDate,
-          reorderLevel: base.reorderLevel ?? reorderLevel,
-        };
-      }
+      // Movement with bill metadata (cast to allow extra fields)
+      const movement = {
+        id: crypto.randomUUID(),
+        type: "INWARD",
+        date: inwISO, // THIS is the 'Inward Date' used in first column of Reports
+        quantity: parseFloat(r.qty || "0"),
+        // keep a short note; detailed meta goes as fields below
+        note: `Inward entry`,
+        purchaser: purchaser || "",
+        billNo: billNo || "",
+        billDate: billISO || null,
+        pricePerUnit: parseFloat(r.pricePerUnit || "0") || 0,
+      } as StockMovement & Record<string, any>;
 
       dispatch({ type: "INWARD", payload: { item: baseItem, movement } });
-    });
+    }
 
     alert("Inward transaction saved ✅");
-    resetAll();
+
+    // reset everything
+    setInwardDate(todayISO());
+    setPurchaser("");
+    setBillNo("");
+    setBillDate(todayISO());
+    setExistingItemId("");
+    setNewItemName("");
+    setUnit("Nos");
+    setQty("");
+    setPricePerUnit("");
+    setReorderLevel("");
+    setDescription("");
+    setRows([]);
   }
 
-  // If user selected an existing item, show its unit (but still allow changing).
-  const selectedUnit =
-    row.itemId &&
-    state.items.find((i) => i.id === row.itemId)?.unit;
+  function cancelAll() {
+    setExistingItemId("");
+    setNewItemName("");
+    setUnit("Nos");
+    setQty("");
+    setPricePerUnit("");
+    setReorderLevel("");
+    setDescription("");
+    setRows([]);
+  }
 
   return (
     <div className="pb-24">
@@ -212,22 +205,29 @@ export default function Inward() {
           {/* Heading */}
           <div className="mb-4">
             <h2 className="text-xl font-semibold">Inward Entry</h2>
-            <p className="text-gray-500 text-sm">Add new materials/items into stock.</p>
+            <p className="text-gray-500 text-sm">
+              Add new materials/items into stock.
+            </p>
           </div>
 
-          {/* Bill header (unchanged layout) */}
+          {/* Bill / header form */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Date</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Inward Date
+              </div>
               <input
                 type="date"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
+                value={inwardDate}
+                onChange={(e) => setInwardDate(e.target.value)}
               />
             </label>
+
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Purchaser</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Purchaser
+              </div>
               <input
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. ABC Suppliers"
@@ -237,7 +237,9 @@ export default function Inward() {
             </label>
 
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Bill No.</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Bill No.
+              </div>
               <input
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. INV-12345"
@@ -245,8 +247,11 @@ export default function Inward() {
                 onChange={(e) => setBillNo(e.target.value)}
               />
             </label>
+
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Bill Date</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Bill Date
+              </div>
               <input
                 type="date"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
@@ -256,29 +261,19 @@ export default function Inward() {
             </label>
           </div>
 
-          {/* Items to Receive (same two-column block + Add Item) */}
+          {/* Items editor */}
           <h3 className="text-lg font-semibold mb-3">Items to Receive</h3>
-
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* existing/new item chooser */}
+            {/* Item pick / new name */}
             <label className="block">
               <div className="text-sm font-medium text-gray-700 mb-1">Item</div>
               <select
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={row.itemId}
-                onChange={(e) =>
-                  setRow((r) => ({
-                    ...r,
-                    itemId: e.target.value,
-                    newName: "", // clear new name if selecting existing
-                    unit: e.target.value
-                      ? state.items.find((i) => i.id === e.target.value)?.unit || r.unit
-                      : r.unit,
-                  }))
-                }
+                value={existingItemId}
+                onChange={(e) => onPickExisting(e.target.value)}
               >
                 <option value="">-- Add New Item --</option>
-                {itemsSorted.map((i) => (
+                {allItems.map((i) => (
                   <option key={i.id} value={i.id}>
                     {i.name}
                   </option>
@@ -287,50 +282,59 @@ export default function Inward() {
             </label>
 
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">New Item Name</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                New Item Name
+              </div>
               <input
-                disabled={!!row.itemId}
-                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none disabled:bg-gray-100"
+                className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. Copper Wire 12mm"
-                value={row.newName}
-                onChange={(e) => setRow((r) => ({ ...r, newName: e.target.value }))}
+                value={newItemName}
+                onChange={(e) => {
+                  setNewItemName(e.target.value);
+                  if (e.target.value) setExistingItemId("");
+                }}
               />
             </label>
 
+            {/* Quantity */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Quantity</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Quantity
+              </div>
               <input
                 type="number"
                 inputMode="decimal"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 100"
-                value={row.qty}
-                onChange={(e) => setRow((r) => ({ ...r, qty: e.target.value }))}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
               />
             </label>
 
+            {/* Price per Unit */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Price per Unit</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Price per Unit
+              </div>
               <input
                 type="number"
                 inputMode="decimal"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 25.50"
-                value={row.price}
-                onChange={(e) => setRow((r) => ({ ...r, price: e.target.value }))}
+                value={pricePerUnit}
+                onChange={(e) => setPricePerUnit(e.target.value)}
               />
             </label>
 
-            {/* Unit (kept as dropdown; prefilled if existing item selected) */}
+            {/* Unit */}
             <label className="block">
               <div className="text-sm font-medium text-gray-700 mb-1">Unit</div>
               <select
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                value={selectedUnit || row.unit}
-                onChange={(e) => setRow((r) => ({ ...r, unit: e.target.value }))}
-                disabled={!!row.itemId} // lock unit if existing item
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
               >
-                {UNIT_OPTIONS.map((u) => (
+                {UNITS.map((u) => (
                   <option key={u} value={u}>
                     {u}
                   </option>
@@ -338,93 +342,104 @@ export default function Inward() {
               </select>
             </label>
 
+            {/* Reorder level */}
             <label className="block">
-              <div className="text-sm font-medium text-gray-700 mb-1">Reorder Level</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Reorder Level
+              </div>
               <input
                 type="number"
                 inputMode="decimal"
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
                 placeholder="e.g. 20"
-                value={row.reorder}
-                onChange={(e) => setRow((r) => ({ ...r, reorder: e.target.value }))}
+                value={reorderLevel}
+                onChange={(e) => setReorderLevel(e.target.value)}
               />
             </label>
 
+            {/* Description */}
             <label className="block md:col-span-2">
-              <div className="text-sm font-medium text-gray-700 mb-1">Description</div>
+              <div className="text-sm font-medium text-gray-700 mb-1">
+                Description
+              </div>
               <textarea
                 rows={3}
                 className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
-                placeholder="Item details..."
-                value={row.desc}
-                onChange={(e) => setRow((r) => ({ ...r, desc: e.target.value }))}
+                placeholder="Item details…"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
               />
             </label>
           </div>
 
-          {/* Add Item button (same place) */}
           <div className="mt-4">
             <button
               type="button"
               onClick={addRow}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium"
             >
-              <span className="material-icons text-base">add</span>
+              <span className="material-icons text-sm">add</span>
               Add Item
             </button>
           </div>
 
-          {/* Pending list (simple summary like before) */}
-          {pending.length > 0 && (
+          {/* Staged items table */}
+          {rows.length > 0 && (
             <div className="mt-6">
-              <div className="mb-2 text-sm text-gray-600">
-                {pending.length} item{pending.length > 1 ? "s" : ""} to be received
+              <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
+                <div className="col-span-4">ITEM NAME</div>
+                <div className="col-span-1">UNIT</div>
+                <div className="col-span-2">QTY</div>
+                <div className="col-span-2">PRICE/UNIT</div>
+                <div className="col-span-2">REORDER</div>
+                <div className="col-span-1 text-right">ACTIONS</div>
               </div>
-              <div className="divide-y rounded-lg border border-gray-200 bg-white">
-                {pending.map((p, idx) => {
-                  const label =
-                    p.itemId
-                      ? itemsSorted.find((i) => i.id === p.itemId)?.name || "Item"
-                      : p.newName || "New Item";
-                  return (
-                    <div key={idx} className="flex items-center justify-between px-3 py-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium truncate">{label}</div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {p.qty} {p.unit}
-                          {p.price ? ` · ₹${p.price}` : ""}{" "}
-                          {p.reorder ? ` · Reorder ${p.reorder}` : ""}{" "}
-                          {p.desc ? ` · ${p.desc}` : ""}
-                        </div>
-                      </div>
+              <div className="divide-y">
+                {rows.map((r) => (
+                  <div
+                    key={r.id}
+                    className="grid grid-cols-12 px-4 py-3 items-center"
+                  >
+                    <div className="col-span-4 truncate font-medium">
+                      {r.name}
+                    </div>
+                    <div className="col-span-1">{r.unit}</div>
+                    <div className="col-span-2">{r.qty}</div>
+                    <div className="col-span-2">
+                      {(parseFloat(r.pricePerUnit || "0") || 0).toFixed(2)}
+                    </div>
+                    <div className="col-span-2">
+                      {parseFloat(r.reorderLevel || "0") || 0}
+                    </div>
+                    <div className="col-span-1 text-right">
                       <button
-                        className="text-red-600 hover:text-red-700 ml-3"
-                        onClick={() => removeRow(idx)}
-                        aria-label="Remove"
-                        title="Remove"
+                        className="text-red-600 hover:underline"
+                        onClick={() => removeRow(r.id)}
                       >
-                        <span className="material-icons">delete</span>
+                        Remove
                       </button>
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Footer actions (same “Cancel” + “Save Transaction”) */}
+          {/* Footer actions */}
           <div className="flex items-center justify-end gap-3 mt-6">
             <button
               className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
               type="button"
-              onClick={resetAll}
+              onClick={cancelAll}
             >
               Cancel
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
               type="button"
-              onClick={saveAll}
+              onClick={saveTransaction}
+              disabled={rows.length === 0}
+              title={rows.length === 0 ? "Add at least one item" : ""}
             >
               Save Transaction
             </button>
