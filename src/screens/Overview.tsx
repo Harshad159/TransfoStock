@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
@@ -6,76 +6,129 @@ import { useInventory } from "../context/InventoryContext";
 const PAGE_SIZE = 15;
 const DELETE_PASSWORD = "Narsinha@123";
 
+/* ---------- Helpers ---------- */
+
+// Weighted-average cost from INWARD movements for a given item.
+function computeAvgCostForItem(itemId: string, movements: any[], fallback = 0): number {
+  let qtySum = 0;
+  let costSum = 0;
+
+  for (const m of movements) {
+    if (m.type !== "INWARD") continue;
+    const mid = m.itemId || m.item?.id;
+    if (mid !== itemId) continue;
+
+    const q = Number(m.quantity) || 0;
+    const p =
+      (m.meta && typeof m.meta.pricePerUnit !== "undefined" ? Number(m.meta.pricePerUnit) : NaN) ||
+      extractPriceFromNote(m.note);
+
+    if (q > 0 && isFinite(p)) {
+      qtySum += q;
+      costSum += q * p;
+    }
+  }
+
+  if (qtySum <= 0) return Number.isFinite(fallback) ? Number(fallback) : 0;
+  return costSum / qtySum;
+}
+
+// Parse "Price: 12.5" from older notes (fallback only).
+function extractPriceFromNote(note?: string): number {
+  if (!note) return 0;
+  const m = note.match(/price\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  return m ? Number(m[1]) : 0;
+}
+
+// CSV helper
+function toCSV(rows: (string | number)[][]) {
+  const csv = rows
+    .map((r) =>
+      r
+        .map((cell) => {
+          const s = String(cell ?? "");
+          const needsQuote = /[",\n]/.test(s);
+          const safe = s.replace(/"/g, '""');
+          return needsQuote ? `"${safe}"` : safe;
+        })
+        .join(",")
+    )
+    .join("\n");
+  return new Blob([csv], { type: "text/csv;charset=utf-8" });
+}
+
 type EditForm = {
   id: string;
   name: string;
   unit: string;
-  reorderLevel: string; // keep as string for input
+  reorderLevel: string; // keep as string for input UX
   description: string;
 };
 
 export default function Stock() {
   const { state, dispatch } = useInventory();
+
+  // Search + pagination
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
 
   // Edit modal state
   const [editing, setEditing] = useState<EditForm | null>(null);
 
-  // Filter + sort
+  // Enrich items with average cost computed from movements (falls back to item.purchasePrice)
+  const enriched = useMemo(() => {
+    return state.items.map((i) => {
+      const avgCost = computeAvgCostForItem(i.id, state.movements, i.purchasePrice ?? 0);
+      return { ...i, avgCost };
+    });
+  }, [state.items, state.movements]);
+
+  // Filter across ALL items first (so search spans all pages), then paginate
   const filtered = useMemo(() => {
-    const base = [...state.items].sort((a, b) => a.name.localeCompare(b.name));
+    const base = [...enriched].sort((a, b) => a.name.localeCompare(b.name));
     const needle = q.trim().toLowerCase();
     if (!needle) return base;
     return base.filter(
       (i) =>
         i.name.toLowerCase().includes(needle) ||
-        (i.description || "").toLowerCase().includes(needle)
+        (i.description || "").toLowerCase().includes(needle) ||
+        (i.unit || "").toLowerCase().includes(needle)
     );
-  }, [state.items, q]);
+  }, [enriched, q]);
 
-  // Pagination
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(1, page), pageCount);
   const start = (safePage - 1) * PAGE_SIZE;
   const pageItems = filtered.slice(start, start + PAGE_SIZE);
 
-  // Export CSV (unchanged columns per your spec)
+  useEffect(() => {
+    setPage(1); // reset to page 1 when search changes
+  }, [q]);
+
+  // Export (full filtered set, not just current page)
   function exportCSV() {
-    const rows = [
+    const rows: (string | number)[][] = [
       ["Item Name", "Unit", "Current Stock", "Reorder Level", "Price", "Description"],
-      ...state.items.map((i) => [
+      ...filtered.map((i) => [
         i.name,
         i.unit,
         String(i.currentStock ?? 0),
         String(i.reorderLevel ?? 0),
-        (i.purchasePrice ?? 0).toString(),
+        (Number(i.avgCost) || 0).toFixed(2), // Price = weighted average cost
         (i.description ?? "").replace(/\n/g, " "),
       ]),
     ];
-    const csv = rows
-      .map((r) =>
-        r
-          .map((cell) => {
-            const s = String(cell);
-            const needsQuote = /[",\n]/.test(s);
-            const safe = s.replace(/"/g, '""');
-            return needsQuote ? `"${safe}"` : safe;
-          })
-          .join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const blob = toCSV(rows);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "transfostock_export.csv";
+    a.download = "stock_export.csv";
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  // Open edit modal
+  /* ---------- Edit ---------- */
+
   function openEdit(id: string) {
     const it = state.items.find((i) => i.id === id);
     if (!it) return;
@@ -107,27 +160,25 @@ export default function Stock() {
     setEditing(null);
   }
 
-  // Delete (with password)
+  /* ---------- Delete (password protected) ---------- */
+
   function requestDelete(id: string) {
     const it = state.items.find((x) => x.id === id);
-    if (!it) return;
-    const sure = confirm(
-      `Delete "${it.name}" permanently?\nThis removes the item and its history from this device.`
-    );
-    if (!sure) return;
-
+    if (!it) {
+      alert("Item not found.");
+      return;
+    }
+    if (!confirm(`Delete "${it.name}" permanently?\nThis removes the item and its history from this device.`)) {
+      return;
+    }
     const pwd = prompt("Enter delete password:");
     if (pwd !== DELETE_PASSWORD) {
       alert("Incorrect password.");
       return;
     }
-    dispatch({ type: "DELETE_ITEM", payload: { id } });
+    dispatch({ type: "DELETE_ITEM", payload: { id: it.id } });
+    alert("Deleted successfully.");
   }
-
-  // Keep page in range when filtering changes
-  React.useEffect(() => {
-    setPage(1);
-  }, [q]);
 
   return (
     <div className="pb-24">
@@ -142,7 +193,7 @@ export default function Stock() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search items..."
-                className="w-64 bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                className="w-72 bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
               />
               <button
                 onClick={exportCSV}
@@ -153,14 +204,15 @@ export default function Stock() {
             </div>
           </div>
 
-          {/* Header row */}
+          {/* Header row (12 cols total) */}
           <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
             <div className="col-span-4">ITEM NAME</div>
             <div className="col-span-1">UNIT</div>
             <div className="col-span-2">CURRENT STOCK</div>
             <div className="col-span-2">REORDER LEVEL</div>
             <div className="col-span-1">PRICE</div>
-            <div className="col-span-2">ACTIONS</div>
+            <div className="col-span-1">DESCRIPTION</div>
+            <div className="col-span-1">ACTIONS</div>
           </div>
 
           {/* Body */}
@@ -168,7 +220,7 @@ export default function Stock() {
             <div className="flex flex-col items-center justify-center py-24 text-center text-gray-600">
               <span className="material-icons text-5xl text-gray-400 mb-3">inventory_2</span>
               <div className="text-xl font-semibold mb-1">No Items in Stock</div>
-              <div className="text-gray-500">Add items using the ‘Inward’ page to get started.</div>
+              <div className="text-gray-500">Add items using the &apos;Inward&apos; page to get started.</div>
             </div>
           ) : (
             <div className="divide-y">
@@ -180,15 +232,14 @@ export default function Stock() {
                   <div
                     className={
                       "col-span-2 " +
-                      ((i.currentStock ?? 0) <= (i.reorderLevel ?? 0)
-                        ? "text-red-600 font-semibold"
-                        : "")
+                      ((i.currentStock ?? 0) <= (i.reorderLevel ?? 0) ? "text-red-600 font-semibold" : "")
                     }
                   >
                     {i.reorderLevel ?? 0}
                   </div>
-                  <div className="col-span-1">{(i.purchasePrice ?? 0).toFixed(2)}</div>
-                  <div className="col-span-2 flex gap-2">
+                  <div className="col-span-1">{(Number((i as any).avgCost) || 0).toFixed(2)}</div>
+                  <div className="col-span-1 truncate">{i.description || "—"}</div>
+                  <div className="col-span-1 flex flex-wrap gap-2">
                     <button
                       onClick={() => openEdit(i.id)}
                       className="px-3 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-sm"
@@ -219,7 +270,7 @@ export default function Stock() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={safePage <= 1}
-                className="px-3 py-1 rounded border disabled:opacity-50"
+                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
               >
                 Prev
               </button>
@@ -229,7 +280,7 @@ export default function Stock() {
               <button
                 onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
                 disabled={safePage >= pageCount}
-                className="px-3 py-1 rounded border disabled:opacity-50"
+                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
               >
                 Next
               </button>
