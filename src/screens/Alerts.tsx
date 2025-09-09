@@ -3,44 +3,52 @@ import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 
-// CSV helper
-function toCSV(rows: (string | number)[][]) {
-  const csv = rows
-    .map((r) =>
-      r
-        .map((cell) => {
-          const s = String(cell ?? "");
-          const needsQuote = /[",\n]/.test(s);
-          const safe = s.replace(/"/g, '""');
-          return needsQuote ? `"${safe}"` : safe;
-        })
-        .join(",")
-    )
-    .join("\n");
-  return new Blob([csv], { type: "text/csv;charset=utf-8" });
-}
+/**
+ * Adds the Export button you already requested previously,
+ * and fixes mobile overlap with horizontal scroll.
+ */
 
 export default function Alerts() {
   const { state } = useInventory();
 
-  // Items at or below reorder level
   const low = useMemo(() => {
-    return state.items
-      .filter((i) => (i.currentStock ?? 0) <= (i.reorderLevel ?? 0))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const out: any[] = [];
+    for (const i of state.items as any[]) {
+      const stock = i?.currentStock ?? 0;
+      const rl = i?.reorderLevel ?? 0;
+      if (stock <= rl) out.push(i);
+    }
+    // sort by severity
+    return out.sort(
+      (a, b) =>
+        (a?.currentStock ?? 0) - (a?.reorderLevel ?? 0) -
+        ((b?.currentStock ?? 0) - (b?.reorderLevel ?? 0))
+    );
   }, [state.items]);
 
   function exportCSV() {
-    const rows: (string | number)[][] = [
+    const rows = [
       ["Item Name", "Unit", "Current Stock", "Reorder Level"],
-      ...low.map((i) => [
-        i.name,
-        i.unit,
-        String(i.currentStock ?? 0),
-        String(i.reorderLevel ?? 0),
+      ...low.map((i: any) => [
+        i?.name ?? "",
+        i?.unit ?? "",
+        String(i?.currentStock ?? 0),
+        String(i?.reorderLevel ?? 0),
       ]),
     ];
-    const blob = toCSV(rows);
+    const csv = rows
+      .map((r) =>
+        r
+          .map((cell) => {
+            const s = String(cell);
+            const needsQuote = /[",\n]/.test(s);
+            const esc = s.replace(/"/g, '""');
+            return needsQuote ? `"${esc}"` : esc;
+          })
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -54,53 +62,60 @@ export default function Alerts() {
       <Header title="Low Stock Alerts" />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* Top bar */}
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold flex items-center gap-2">
               <span className="material-icons text-orange-500">warning</span>
               Low Stock Alerts
             </h2>
             <button
               onClick={exportCSV}
-              disabled={low.length === 0}
-              className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium disabled:opacity-50"
-              title={low.length === 0 ? "No low stock items to export" : "Export to CSV"}
+              className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium"
             >
               Export
             </button>
           </div>
 
-          {/* Header row */}
-          <div className="grid grid-cols-12 bg-red-100 text-red-800 font-semibold rounded-md px-4 py-3">
-            <div className="col-span-6 md:col-span-5">ITEM NAME</div>
-            <div className="col-span-2 md:col-span-2">UNIT</div>
-            <div className="col-span-2 md:col-span-2">CURRENT STOCK</div>
-            <div className="col-span-2 md:col-span-3">REORDER LEVEL</div>
-          </div>
-
-          {/* Body */}
-          {low.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center text-gray-600">
-              <span className="material-icons text-5xl text-green-500 mb-3">check_circle</span>
-              <div className="text-xl font-semibold mb-1">All Good!</div>
-              <div className="text-gray-500">
-                No items are currently below their reorder level.
+          {/* ====== TABLE (responsively scrollable) ====== */}
+          <div className="overflow-x-auto">
+            <div className="min-w-[680px] sm:min-w-0">
+              {/* Header */}
+              <div className="grid grid-cols-12 bg-red-100 text-red-800 font-semibold rounded-md px-4 py-3 text-xs sm:text-sm whitespace-nowrap">
+                <div className="col-span-6">ITEM NAME</div>
+                <div className="col-span-2">UNIT</div>
+                <div className="col-span-2">CURRENT STOCK</div>
+                <div className="col-span-2">REORDER LEVEL</div>
               </div>
-            </div>
-          ) : (
-            <div className="divide-y">
-              {low.map((i) => (
-                <div key={i.id} className="grid grid-cols-12 px-4 py-3 hover:bg-gray-50">
-                  <div className="col-span-6 md:col-span-5 truncate font-medium">{i.name}</div>
-                  <div className="col-span-2 md:col-span-2">{i.unit}</div>
-                  <div className="col-span-2 md:col-span-2">{i.currentStock ?? 0}</div>
-                  <div className="col-span-2 md:col-span-3 text-red-700 font-semibold">
-                    {i.reorderLevel ?? 0}
+
+              {/* Rows / Empty */}
+              {low.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center text-gray-600">
+                  <span className="material-icons text-green-500 text-6xl mb-3">
+                    check_circle
+                  </span>
+                  <div className="text-2xl font-semibold mb-1">All Good!</div>
+                  <div className="text-gray-500">
+                    No items are currently below their reorder level.
                   </div>
                 </div>
-              ))}
+              ) : (
+                <div className="divide-y">
+                  {low.map((i: any) => (
+                    <div
+                      key={i.id}
+                      className="grid grid-cols-12 px-4 py-3 hover:bg-red-50 text-sm"
+                    >
+                      <div className="col-span-6 truncate font-medium">
+                        {i?.name ?? ""}
+                      </div>
+                      <div className="col-span-2">{i?.unit ?? ""}</div>
+                      <div className="col-span-2">{i?.currentStock ?? 0}</div>
+                      <div className="col-span-2">{i?.reorderLevel ?? 0}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </Card>
       </div>
     </div>
