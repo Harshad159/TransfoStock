@@ -3,135 +3,146 @@ import Header from "../components/Header";
 import Card from "../components/Card";
 import { useInventory } from "../context/InventoryContext";
 
-// Build a weighted-average cost from INWARD movements.
-// Falls back to item.purchasePrice if you never recorded price on any inward.
-function computeAvgCostForItem(itemId: string, movements: any[], fallback = 0): number {
-  let qtySum = 0;
-  let costSum = 0;
+const PAGE_SIZE = 15;
+const DELETE_PASSWORD = "Narsinha@123";
 
-  for (const m of movements) {
-    if (m.type !== "INWARD") continue;
-    // Support either movement.itemId or legacy movement.item?.id
-    const mid = m.itemId || m.item?.id;
-    if (mid !== itemId) continue;
-
-    const q = Number(m.quantity) || 0;
-    // Prefer meta.pricePerUnit; fall back to parsed "Price" from note, then 0
-    const p =
-      (m.meta && typeof m.meta.pricePerUnit !== "undefined" ? Number(m.meta.pricePerUnit) : NaN) ||
-      extractPriceFromNote(m.note);
-
-    if (q > 0 && isFinite(p)) {
-      qtySum += q;
-      costSum += q * p;
-    }
-  }
-
-  if (qtySum <= 0) {
-    return Number.isFinite(fallback) ? Number(fallback) : 0;
-  }
-  return costSum / qtySum;
-}
-
-// Try to parse “… Price: 12.5 …” in legacy notes as a fallback.
-function extractPriceFromNote(note?: string): number {
-  if (!note) return 0;
-  const m = note.match(/price\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
-  return m ? Number(m[1]) : 0;
-}
-
-// CSV helper
-function toCSV(rows: (string | number)[][]) {
-  const csv = rows
-    .map((r) =>
-      r
-        .map((cell) => {
-          const s = String(cell ?? "");
-          const needsQuote = /[",\n]/.test(s);
-          const safe = s.replace(/"/g, '""');
-          return needsQuote ? `"${safe}"` : safe;
-        })
-        .join(",")
-    )
-    .join("\n");
-  return new Blob([csv], { type: "text/csv;charset=utf-8" });
-}
+type EditForm = {
+  id: string;
+  name: string;
+  unit: string;
+  reorderLevel: string; // keep as string for input
+  description: string;
+};
 
 export default function Stock() {
-  const { state } = useInventory();
-
-  // UI state
+  const { state, dispatch } = useInventory();
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
-  const PAGE_SIZE = 15;
 
-  // Enrich items with avg cost (weighted) using movements.
-  const enriched = useMemo(() => {
-    return state.items.map((i) => {
-      const avgCost = computeAvgCostForItem(i.id, state.movements, i.purchasePrice ?? 0);
-      return {
-        ...i,
-        avgCost,
-      };
-    });
-  }, [state.items, state.movements]);
+  // Edit modal state
+  const [editing, setEditing] = useState<EditForm | null>(null);
 
-  // Filter + sort (by name) BEFORE pagination so search spans all pages.
+  // Filter + sort
   const filtered = useMemo(() => {
-    const base = [...enriched].sort((a, b) => a.name.localeCompare(b.name));
-    if (!q.trim()) return base;
+    const base = [...state.items].sort((a, b) => a.name.localeCompare(b.name));
     const needle = q.trim().toLowerCase();
+    if (!needle) return base;
     return base.filter(
       (i) =>
         i.name.toLowerCase().includes(needle) ||
-        (i.description || "").toLowerCase().includes(needle) ||
-        (i.unit || "").toLowerCase().includes(needle)
+        (i.description || "").toLowerCase().includes(needle)
     );
-  }, [enriched, q]);
+  }, [state.items, q]);
 
-  // Pagination slice
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // Pagination
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), pageCount);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const pageItems = filtered.slice(start, start + PAGE_SIZE);
 
-  // Export visible data (full filtered set, not just current page).
+  // Export CSV (unchanged columns per your spec)
   function exportCSV() {
     const rows = [
       ["Item Name", "Unit", "Current Stock", "Reorder Level", "Price", "Description"],
-      ...filtered.map((i) => [
+      ...state.items.map((i) => [
         i.name,
         i.unit,
         String(i.currentStock ?? 0),
         String(i.reorderLevel ?? 0),
-        (Number(i.avgCost) || 0).toFixed(2),
+        (i.purchasePrice ?? 0).toString(),
         (i.description ?? "").replace(/\n/g, " "),
       ]),
     ];
-    const blob = toCSV(rows);
+    const csv = rows
+      .map((r) =>
+        r
+          .map((cell) => {
+            const s = String(cell);
+            const needsQuote = /[",\n]/.test(s);
+            const safe = s.replace(/"/g, '""');
+            return needsQuote ? `"${safe}"` : safe;
+          })
+          .join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "stock_export.csv";
+    a.download = "transfostock_export.csv";
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  // Open edit modal
+  function openEdit(id: string) {
+    const it = state.items.find((i) => i.id === id);
+    if (!it) return;
+    setEditing({
+      id: it.id,
+      name: it.name,
+      unit: it.unit,
+      reorderLevel: String(it.reorderLevel ?? 0),
+      description: it.description ?? "",
+    });
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    const patch = {
+      name: editing.name.trim(),
+      unit: editing.unit.trim(),
+      reorderLevel: Number(editing.reorderLevel || "0"),
+      description: editing.description.trim(),
+    };
+    if (!patch.name) return alert("Item name is required.");
+    if (!patch.unit) return alert("Unit is required.");
+
+    dispatch({ type: "UPDATE_ITEM", payload: { id: editing.id, patch } });
+    setEditing(null);
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+  }
+
+  // Delete (with password)
+  function requestDelete(id: string) {
+    const it = state.items.find((x) => x.id === id);
+    if (!it) return;
+    const sure = confirm(
+      `Delete "${it.name}" permanently?\nThis removes the item and its history from this device.`
+    );
+    if (!sure) return;
+
+    const pwd = prompt("Enter delete password:");
+    if (pwd !== DELETE_PASSWORD) {
+      alert("Incorrect password.");
+      return;
+    }
+    dispatch({ type: "DELETE_ITEM", payload: { id } });
+  }
+
+  // Keep page in range when filtering changes
+  React.useEffect(() => {
+    setPage(1);
+  }, [q]);
 
   return (
     <div className="pb-24">
       <Header title="Stock List" />
       <div className="max-w-6xl mx-auto p-4">
         <Card>
-          {/* Top toolbar */}
+          {/* Toolbar */}
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
             <h2 className="text-2xl font-semibold">Stock List</h2>
             <div className="flex items-center gap-3">
               <input
                 value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setPage(1); // reset pager when searching
-                }}
+                onChange={(e) => setQ(e.target.value)}
                 placeholder="Search items..."
-                className="w-72 bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                className="w-64 bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
               />
               <button
                 onClick={exportCSV}
@@ -142,66 +153,83 @@ export default function Stock() {
             </div>
           </div>
 
-          {/* Table header */}
+          {/* Header row */}
           <div className="grid grid-cols-12 bg-gray-200 text-gray-800 font-semibold rounded-md px-4 py-3">
             <div className="col-span-4">ITEM NAME</div>
-            <div className="col-span-2">UNIT</div>
+            <div className="col-span-1">UNIT</div>
             <div className="col-span-2">CURRENT STOCK</div>
             <div className="col-span-2">REORDER LEVEL</div>
             <div className="col-span-1">PRICE</div>
-            <div className="col-span-1">DESCRIPTION</div>
+            <div className="col-span-2">ACTIONS</div>
           </div>
 
-          {/* Rows / Empty state */}
-          {pageRows.length === 0 ? (
+          {/* Body */}
+          {pageItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 text-center text-gray-600">
               <span className="material-icons text-5xl text-gray-400 mb-3">inventory_2</span>
               <div className="text-xl font-semibold mb-1">No Items in Stock</div>
-              <div className="text-gray-500">Add items using the &apos;Inward&apos; page to get started.</div>
+              <div className="text-gray-500">Add items using the ‘Inward’ page to get started.</div>
             </div>
           ) : (
             <div className="divide-y">
-              {pageRows.map((i) => (
+              {pageItems.map((i) => (
                 <div key={i.id} className="grid grid-cols-12 px-4 py-3 hover:bg-gray-50">
                   <div className="col-span-4 truncate font-medium">{i.name}</div>
-                  <div className="col-span-2">{i.unit}</div>
+                  <div className="col-span-1">{i.unit}</div>
                   <div className="col-span-2">{i.currentStock ?? 0}</div>
                   <div
                     className={
                       "col-span-2 " +
-                      ((i.currentStock ?? 0) <= (i.reorderLevel ?? 0) ? "text-red-600 font-semibold" : "")
+                      ((i.currentStock ?? 0) <= (i.reorderLevel ?? 0)
+                        ? "text-red-600 font-semibold"
+                        : "")
                     }
                   >
                     {i.reorderLevel ?? 0}
                   </div>
-                  <div className="col-span-1">{(Number(i.avgCost) || 0).toFixed(2)}</div>
-                  <div className="col-span-1 truncate">{i.description || "—"}</div>
+                  <div className="col-span-1">{(i.purchasePrice ?? 0).toFixed(2)}</div>
+                  <div className="col-span-2 flex gap-2">
+                    <button
+                      onClick={() => openEdit(i.id)}
+                      className="px-3 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-sm"
+                      title="Edit"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => requestDelete(i.id)}
+                      className="px-3 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-sm"
+                      title="Delete (password required)"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Pager */}
+          {/* Pagination */}
           <div className="flex items-center justify-between mt-4 text-sm text-gray-600">
             <div>
-              Showing {filtered.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}-
-              {Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+              Showing {filtered.length === 0 ? 0 : start + 1}–
+              {Math.min(start + PAGE_SIZE, filtered.length)} of {filtered.length}
             </div>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <button
-                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="px-3 py-1 rounded border disabled:opacity-50"
               >
                 Prev
               </button>
               <div>
-                Page {page} / {totalPages}
+                Page {safePage} / {pageCount}
               </div>
               <button
-                className="px-3 py-1 rounded border border-gray-300 disabled:opacity-50"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                disabled={safePage >= pageCount}
+                className="px-3 py-1 rounded border disabled:opacity-50"
               >
                 Next
               </button>
@@ -209,6 +237,71 @@ export default function Stock() {
           </div>
         </Card>
       </div>
+
+      {/* Edit Modal */}
+      {editing && (
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center px-4">
+          <div className="bg-white w-full max-w-lg rounded-xl shadow-lg p-5">
+            <div className="text-xl font-semibold mb-4">Edit Item</div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label className="block">
+                <div className="text-sm text-gray-700 mb-1">Item Name</div>
+                <input
+                  className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={editing.name}
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                />
+              </label>
+
+              <label className="block">
+                <div className="text-sm text-gray-700 mb-1">Unit</div>
+                <input
+                  className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={editing.unit}
+                  onChange={(e) => setEditing({ ...editing, unit: e.target.value })}
+                  placeholder="e.g. Nos, Kg, Litre, Bundles, Bobbins"
+                />
+              </label>
+
+              <label className="block">
+                <div className="text-sm text-gray-700 mb-1">Reorder Level</div>
+                <input
+                  type="number"
+                  className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={editing.reorderLevel}
+                  onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })}
+                />
+              </label>
+
+              <label className="block md:col-span-2">
+                <div className="text-sm text-gray-700 mb-1">Description</div>
+                <textarea
+                  rows={3}
+                  className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                  value={editing.description}
+                  onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 mt-6">
+              <button
+                onClick={cancelEdit}
+                className="px-4 py-2 rounded border border-gray-300 bg-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
