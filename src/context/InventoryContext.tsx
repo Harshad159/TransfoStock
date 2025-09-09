@@ -7,33 +7,23 @@ export type MovementType = "INWARD" | "OUTWARD" | "RETURN";
 export type StockMovement = {
   id: string;
   itemId: string;
-  itemName: string; // snapshot for faster reports
-  unit: string;     // snapshot for faster reports
+  itemName: string;
+  unit: string;
   type: MovementType;
-  date: string;     // ISO datetime (when movement happened)
+  date: string;      // ISO
   quantity: number;
-  pricePerUnit?: number; // only for INWARD (used for avg cost)
+  pricePerUnit?: number; // INWARD only
   note?: string;
-
-  // Optional structured metadata for reports/exports.
-  // We keep these optional so existing data continues to load fine.
   meta?: {
-    // Inward bill info
     purchaser?: string;
     billNo?: string;
     billDate?: string; // ISO
-
-    // Outward site issue
     toSite?: string;
     laborName?: string;
     workOrder?: string;
     scheme?: string;
-
-    // Outward factory issue
     department?: string;
     issueToEmployee?: string;
-
-    // If you tag outward kind in the UI, set one of these:
     outwardKind?: "SITE" | "FACTORY";
   };
 };
@@ -45,14 +35,8 @@ export type InventoryItem = {
   description?: string;
   openingStockDate?: string;
   reorderLevel?: number;
-
-  /** running average cost of the item */
-  purchasePrice: number;
-
-  /** live stock on hand */
+  purchasePrice: number; // avg cost
   currentStock: number;
-
-  /** optional local history pointer; not required by UI */
   history?: string[];
 };
 
@@ -69,28 +53,27 @@ type InwardPayload = {
     description?: string;
     openingStockDate?: string;
     reorderLevel?: number;
-    purchasePrice?: number; // optional seed
+    purchasePrice?: number;
   };
-  movement: StockMovement; // expect type "INWARD" with pricePerUnit if you want avg-cost update
+  movement: StockMovement; // type "INWARD"
 };
 
 type OutwardPayload = {
   itemId: string;
   quantity: number;
-  movement: StockMovement; // expect type "OUTWARD"
+  movement: StockMovement; // type "OUTWARD"
 };
 
 type ReturnPayload = {
   itemId: string;
   quantity: number;
-  movement: StockMovement; // expect type "RETURN"
+  movement: StockMovement; // type "RETURN"
 };
 
 type Action =
   | { type: "INWARD"; payload: InwardPayload }
   | { type: "OUTWARD"; payload: OutwardPayload }
   | { type: "RETURN"; payload: ReturnPayload }
-  // NEW:
   | { type: "UPDATE_ITEM"; payload: { id: string; patch: Partial<InventoryItem> } }
   | { type: "DELETE_ITEM"; payload: { id: string } };
 
@@ -98,20 +81,31 @@ type Action =
 
 const LS_KEY = "transfostock_v1";
 
+function genId() {
+  // robust id generator in-browser
+  // @ts-ignore
+  return (crypto?.randomUUID?.() as string) || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
 function loadInitial(): State {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const parsed: State = JSON.parse(raw);
 
-      // defensive defaults so old data continues to work
-      parsed.items = (parsed.items || []).map((it) => ({
+      // Defensive defaults so old data continues to work
+      let items = (parsed.items || []).map((it: any) => ({
         purchasePrice: 0,
         currentStock: 0,
         ...it,
-      }));
-      parsed.movements = parsed.movements || [];
-      return parsed;
+      })) as InventoryItem[];
+
+      // Ensure every item has an id (prevents accidental mass delete)
+      items = items.map((it) => (it.id ? it : { ...it, id: genId() }));
+
+      const movements = (parsed.movements || []) as StockMovement[];
+
+      return { items, movements };
     }
   } catch {
     // ignore
@@ -121,13 +115,7 @@ function loadInitial(): State {
 
 /** ---------- Helpers ---------- */
 
-/** Weighted-average cost update */
-function updateAverageCost(
-  prevAvg: number,
-  prevQty: number,
-  addQty: number,
-  addPrice?: number
-): number {
+function updateAverageCost(prevAvg: number, prevQty: number, addQty: number, addPrice?: number): number {
   const price = typeof addPrice === "number" ? addPrice : prevAvg;
   const totalCost = prevAvg * prevQty + price * addQty;
   const totalQty = prevQty + addQty;
@@ -135,7 +123,6 @@ function updateAverageCost(
   return totalCost / totalQty;
 }
 
-/** clamp to avoid negative stock */
 function clampNonNegative(n: number): number {
   return n < 0 ? 0 : n;
 }
@@ -148,11 +135,9 @@ function reducer(state: State, action: Action): State {
       const { item, movement } = action.payload;
       const qty = Math.max(0, Math.floor(movement.quantity || 0));
 
-      // Does the item already exist?
       const existing = state.items.find((i) => i.id === item.id);
 
       if (existing) {
-        // Update existing: stock & weighted average cost (only if price provided)
         const newStock = (existing.currentStock || 0) + qty;
         const newAvg = updateAverageCost(
           existing.purchasePrice || 0,
@@ -163,14 +148,11 @@ function reducer(state: State, action: Action): State {
 
         const updatedItem: InventoryItem = {
           ...existing,
-          // name/unit might be updated by the incoming base item (keep newest names)
           name: item.name ?? existing.name,
           unit: item.unit ?? existing.unit,
           description: item.description ?? existing.description,
           reorderLevel:
-            typeof item.reorderLevel === "number"
-              ? item.reorderLevel
-              : existing.reorderLevel,
+            typeof item.reorderLevel === "number" ? item.reorderLevel : existing.reorderLevel,
           openingStockDate: item.openingStockDate ?? existing.openingStockDate,
           currentStock: newStock,
           purchasePrice: newAvg,
@@ -190,7 +172,6 @@ function reducer(state: State, action: Action): State {
           movements: [...state.movements, m],
         };
       } else {
-        // Create new item
         const seedPrice =
           typeof movement.pricePerUnit === "number"
             ? movement.pricePerUnit
@@ -199,7 +180,7 @@ function reducer(state: State, action: Action): State {
             : 0;
 
         const newItem: InventoryItem = {
-          id: item.id,
+          id: item.id || genId(),
           name: item.name,
           unit: item.unit,
           description: item.description,
@@ -273,17 +254,16 @@ function reducer(state: State, action: Action): State {
       };
     }
 
-    /** -------- NEW CASES -------- */
-
     case "UPDATE_ITEM": {
       const { id, patch } = action.payload;
+      const exists = state.items.some((it) => it.id === id);
+      if (!exists) return state;
       return {
         ...state,
         items: state.items.map((it) =>
           it.id === id
             ? {
                 ...it,
-                // Only allow safe edits; leave stock & avg cost intact unless explicitly provided.
                 name: patch.name ?? it.name,
                 unit: patch.unit ?? it.unit,
                 description: patch.description ?? it.description,
@@ -291,31 +271,27 @@ function reducer(state: State, action: Action): State {
                   typeof patch.reorderLevel === "number"
                     ? patch.reorderLevel
                     : it.reorderLevel,
-                openingStockDate:
-                  patch.openingStockDate ?? it.openingStockDate,
-                // If someone *does* pass these we still honor them,
-                // but your UI doesn't send them.
+                openingStockDate: patch.openingStockDate ?? it.openingStockDate,
                 currentStock:
-                  typeof patch.currentStock === "number"
-                    ? patch.currentStock
-                    : it.currentStock,
+                  typeof patch.currentStock === "number" ? patch.currentStock : it.currentStock,
                 purchasePrice:
-                  typeof patch.purchasePrice === "number"
-                    ? patch.purchasePrice
-                    : it.purchasePrice,
+                  typeof patch.purchasePrice === "number" ? patch.purchasePrice : it.purchasePrice,
               }
             : it
         ),
-        // Keep historical movements as-is; they snapshot itemName/unit at the time.
       };
     }
 
     case "DELETE_ITEM": {
       const { id } = action.payload;
-      return {
-        items: state.items.filter((it) => it.id !== id),
-        movements: state.movements.filter((m) => m.itemId !== id),
-      };
+      // Guard: only proceed if an item with this id exists
+      const exists = state.items.some((it) => it.id === id);
+      if (!exists) return state;
+
+      const nextItems = state.items.filter((it) => it.id !== id);
+      const nextMovs = state.movements.filter((m) => m.itemId !== id);
+
+      return { ...state, items: nextItems, movements: nextMovs };
     }
 
     default:
@@ -325,22 +301,17 @@ function reducer(state: State, action: Action): State {
 
 /** ---------- Context ---------- */
 
-type Ctx = {
-  state: State;
-  dispatch: React.Dispatch<Action>;
-};
-
+type Ctx = { state: State; dispatch: React.Dispatch<Action> };
 const InventoryContext = createContext<Ctx | undefined>(undefined);
 
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadInitial);
 
-  // Persist to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(state));
     } catch {
-      // ignore quota errors
+      // ignore
     }
   }, [state]);
 
@@ -353,8 +324,6 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
 
 export function useInventory(): Ctx {
   const ctx = useContext(InventoryContext);
-  if (!ctx) {
-    throw new Error("useInventory must be used within InventoryProvider");
-  }
+  if (!ctx) throw new Error("useInventory must be used within InventoryProvider");
   return ctx;
 }
