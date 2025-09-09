@@ -27,6 +27,7 @@ export default function Outward() {
   const [labor, setLabor] = useState("");
   const [workOrder, setWorkOrder] = useState("");
   const [scheme, setScheme] = useState("");
+  const [deliveryChallan, setDeliveryChallan] = useState(""); // NEW
 
   // Factory fields
   const [department, setDepartment] = useState("");
@@ -48,6 +49,7 @@ export default function Outward() {
     setLabor("");
     setWorkOrder("");
     setScheme("");
+    setDeliveryChallan(""); // NEW
     setDepartment("");
     setEmployee("");
   }
@@ -59,6 +61,7 @@ export default function Outward() {
       if (labor) parts.push(`Labor: ${labor}`);
       if (workOrder) parts.push(`WO: ${workOrder}`);
       if (scheme) parts.push(`Scheme: ${scheme}`);
+      if (deliveryChallan) parts.push(`Delivery Challan: ${deliveryChallan}`); // NEW
       return parts.join(" | ");
     } else {
       const parts = ["Factory Issue"];
@@ -96,6 +99,7 @@ export default function Outward() {
               laborName: labor || undefined,
               workOrder: workOrder || undefined,
               scheme: scheme || undefined,
+              deliveryChallan: deliveryChallan || undefined, // NEW
             }
           : {
               outwardKind: "FACTORY" as const,
@@ -254,6 +258,17 @@ export default function Outward() {
                     placeholder="e.g. IPDS"
                     value={scheme}
                     onChange={(e) => setScheme(e.target.value)}
+                  />
+                </label>
+
+                {/* NEW: Delivery Challan No. */}
+                <label className="block md:col-span-2">
+                  <div className="text-sm font-medium text-gray-700 mb-1">Delivery Challan No.</div>
+                  <input
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 outline-none"
+                    placeholder="e.g. DC-12345"
+                    value={deliveryChallan}
+                    onChange={(e) => setDeliveryChallan(e.target.value)}
                   />
                 </label>
               </>
